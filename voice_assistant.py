@@ -1,11 +1,11 @@
 """
-Jarvis Voice Assistant — STT → Gemini (native) → TTS
-======================================================
-A fast, continuous-loop voice assistant that uses Gemini natively
-(not as a fallback) for all responses.
+Jarvis Voice Assistant — STT → Gemini 3.1 Flash Live (native) → TTS
+=====================================================================
+A fast, continuous-loop voice assistant that uses Gemini 3.1 Flash Live
+Preview natively — optimized for real-time dialogue with ultra-low latency.
 
   1. Listens  (Speech-to-Text via speech_recognition + PyAudio)
-  2. Thinks   (Gemini Flash — optimized for speed)
+  2. Thinks   (Gemini 3.1 Flash Live Preview — real-time optimized)
   3. Speaks   (Text-to-Speech via pyttsx3 — offline, no API key needed)
 
 Usage:
@@ -44,11 +44,12 @@ import pyttsx3
 # CONFIGURATION
 # ============================================================================
 
-# ── 1. LLM Provider — Gemini (Google AI Studio) — NATIVE, no fallback ───────
+# ── 1. LLM Provider — Gemini 3.1 Flash Live Preview (NATIVE, no fallback) ──
 # Get your free API key at: https://aistudio.google.com/app/apikey
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or "your-gemini-api-key-here"
-# Use Flash model for fastest response times (gemini-2.0-flash or gemini-2.0-flash-lite)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.0-flash"
+# Gemini 3.1 Flash Live Preview — ultra-low latency, real-time dialogue optimized
+# Knowledge cutoff: January 2025 | Input: 131K tokens | Output: 65K tokens
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.1-flash-live-preview"
 
 # Validation
 if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
@@ -56,17 +57,24 @@ if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
     print("   Get a free key from https://aistudio.google.com/app/apikey")
     sys.exit(1)
 
-# ── Initialize Gemini (native, no fallback) ───────────────────────────────
+# ── Initialize Gemini 3.1 Flash Live Preview (native, no fallback) ────────
 import google.generativeai as genai
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Configure generation for speed: Flash model, low temp, concise output
+# Generation config optimized for Gemini 3.1 Flash Live Preview:
+# - Uses thinkingLevel (not thinkingBudget) for latency control
+# - Default 'minimal' thinking = lowest possible latency
+# - Low temperature for fast, deterministic voice responses
 generation_config = {
     "temperature": 0.5,           # Lower = faster, more deterministic
     "top_p": 0.8,
     "top_k": 40,
     "max_output_tokens": 200,     # Keep voice responses short & snappy
     "candidate_count": 1,         # Single candidate = faster
+    # thinkingLevel replaces thinkingBudget in Gemini 3.1
+    # "minimal" = lowest latency (default), "low", "medium", "high"
+    # Uncomment below to adjust if needed:
+    # "thinkingLevel": "minimal",
 }
 
 # Safety settings — block only the most harmful content for speed
@@ -99,10 +107,10 @@ TTS_VOLUME = 0.9               # 0.0 to 1.0
 # INITIALIZE ENGINE
 # ============================================================================
 
-print("=" * 54)
+print("=" * 60)
 print("  J.A.R.V.I.S. — Voice Assistant")
 print("  Just A Rather Very Intelligent System")
-print("=" * 54)
+print("=" * 60)
 
 # ── Recognizer ──────────────────────────────────────────────────────────────
 recognizer = sr.Recognizer()
@@ -127,8 +135,9 @@ for v in voices:
 
 print(f"  TTS Engine: {tts_engine.getProperty('name')}")
 print(f"  Wake Word : {'Enabled (' + WAKE_WORD + ')' if WAKE_WORD else 'Disabled (always listening)'}")
-print(f"  LLM       : Gemini ({GEMINI_MODEL}) — NATIVE (no fallback)")
-print("=" * 54 + "\n")
+print(f"  LLM       : Gemini 3.1 Flash Live Preview — NATIVE (no fallback)")
+print(f"  Model     : {GEMINI_MODEL}")
+print("=" * 60 + "\n")
 
 # ── LLM System Prompt (concise for faster processing) ──────────────────────
 SYSTEM_PROMPT = (
@@ -206,8 +215,8 @@ def listen(use_wake_word: bool = True) -> str | None:
 
 def ask_llm(user_input: str) -> str:
     """
-    Send user input to Gemini natively and return the response.
-    Uses streaming for faster first-token response.
+    Send user input to Gemini 3.1 Flash Live Preview natively and return response.
+    Optimized for ultra-low latency real-time dialogue.
     Maintains conversation history for context.
     """
     global conversation_history
@@ -223,14 +232,14 @@ def ask_llm(user_input: str) -> str:
         # Add current user input
         messages.append({"role": "user", "parts": [user_input]})
 
-        # Use streaming for faster perceived response
+        # Generate response — Gemini 3.1 Flash Live is optimized for speed
         start_time = time.time()
         response = gemini_model.generate_content(
             messages,
-            stream=False,  # Stream=False is actually faster for short responses
+            stream=False,  # Stream=False is faster for short voice responses
         )
         elapsed = time.time() - start_time
-        print(f"  ⚡ [Gemini responded in {elapsed:.2f}s]")
+        print(f"  ⚡ [Gemini 3.1 Flash Live responded in {elapsed:.2f}s]")
 
         reply = response.text.strip()
 
@@ -261,7 +270,7 @@ def ask_llm(user_input: str) -> str:
             return "I'm unable to respond to that request, sir."
 
         # Fallback — don't crash
-        print(f"  ⚠ [Gemini Error]: {e}")
+        print(f"  ⚠ [Gemini 3.1 Error]: {e}")
         return "I encountered an unexpected error, sir. Please try again."
 
 
@@ -282,7 +291,7 @@ def main():
             if not user_text:
                 continue
 
-            # ── Step 2: Think (Gemini native — fast) ────────────────────────
+            # ── Step 2: Think (Gemini 3.1 Flash Live — ultra-fast) ──────────
             print("  🧠 [Thinking...]")
             reply = ask_llm(user_text)
 

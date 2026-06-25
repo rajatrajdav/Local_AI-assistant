@@ -132,7 +132,7 @@ try:
     else:
         genai.configure(api_key=GEMINI_API_KEY)
         # Use standard Gemini model name; can be overridden via GEMINI_MODEL env var
-        GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
         gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         USE_GEMINI = True
         print(f"✓ Gemini API connected ({GEMINI_MODEL_NAME})")
