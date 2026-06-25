@@ -1,0 +1,15 @@
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
+groq==0.4.0
+piper-tts==1.2.0
+numpy==1.24.3
+sounddevice==0.4.6
+pygame==2.5.2
+SpeechRecognition==3.10.0
+pyperclip==1.8.2
+psutil==5.9.6
+python-docx==1.1.0
+python-pptx==0.6.23
+openai==1.12.0
+google-generativeai==0.3.2
