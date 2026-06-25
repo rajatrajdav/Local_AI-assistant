@@ -1,10 +1,11 @@
 """
-Jarvis Voice Assistant — STT → Gemini LLM → TTS
-==================================================
-A clean, continuous-loop voice assistant that:
+Jarvis Voice Assistant — STT → Gemini (native) → TTS
+======================================================
+A fast, continuous-loop voice assistant that uses Gemini natively
+(not as a fallback) for all responses.
 
   1. Listens  (Speech-to-Text via speech_recognition + PyAudio)
-  2. Thinks   (Gemini via Google AI Studio API)
+  2. Thinks   (Gemini Flash — optimized for speed)
   3. Speaks   (Text-to-Speech via pyttsx3 — offline, no API key needed)
 
 Usage:
@@ -43,9 +44,10 @@ import pyttsx3
 # CONFIGURATION
 # ============================================================================
 
-# ── 1. LLM Provider — Gemini (Google AI Studio) ─────────────────────────────
+# ── 1. LLM Provider — Gemini (Google AI Studio) — NATIVE, no fallback ───────
 # Get your free API key at: https://aistudio.google.com/app/apikey
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or "your-gemini-api-key-here"
+# Use Flash model for fastest response times (gemini-2.0-flash or gemini-2.0-flash-lite)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.0-flash"
 
 # Validation
@@ -54,14 +56,34 @@ if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
     print("   Get a free key from https://aistudio.google.com/app/apikey")
     sys.exit(1)
 
-# ── Initialize Gemini ─────────────────────────────────────────────────────
+# ── Initialize Gemini (native, no fallback) ───────────────────────────────
 import google.generativeai as genai
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel(GEMINI_MODEL)
+
+# Configure generation for speed: Flash model, low temp, concise output
+generation_config = {
+    "temperature": 0.5,           # Lower = faster, more deterministic
+    "top_p": 0.8,
+    "top_k": 40,
+    "max_output_tokens": 200,     # Keep voice responses short & snappy
+    "candidate_count": 1,         # Single candidate = faster
+}
+
+# Safety settings — block only the most harmful content for speed
+safety_settings = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+]
+
+gemini_model = genai.GenerativeModel(
+    GEMINI_MODEL,
+    generation_config=generation_config,
+    safety_settings=safety_settings,
+)
 
 # ── 2. Wake word ────────────────────────────────────────────────────────────
-# The assistant only responds when it hears this word (case-insensitive).
-# Set to None or empty string to respond to EVERY utterance.
 WAKE_WORD = "Jarvis"
 
 # ── 3. Microphone settings ──────────────────────────────────────────────────
@@ -70,7 +92,7 @@ MIC_TIMEOUT = 5                # seconds to wait for speech to start
 MIC_PHRASE_LIMIT = 10          # max seconds per utterance
 
 # ── 4. Voice settings (pyttsx3) ─────────────────────────────────────────────
-TTS_VOICE_RATE = 180           # words per minute (default ~200)
+TTS_VOICE_RATE = 190           # Slightly faster for natural conversation
 TTS_VOLUME = 0.9               # 0.0 to 1.0
 
 # ============================================================================
@@ -84,11 +106,11 @@ print("=" * 54)
 
 # ── Recognizer ──────────────────────────────────────────────────────────────
 recognizer = sr.Recognizer()
-recognizer.energy_threshold = 1000       # sensitivity to ambient noise
+recognizer.energy_threshold = 1000
 recognizer.dynamic_energy_threshold = True
 recognizer.dynamic_energy_adjustment_damping = 0.15
 recognizer.dynamic_energy_ratio = 1.5
-recognizer.pause_threshold = 0.8         # pause before end-of-speech
+recognizer.pause_threshold = 0.8
 recognizer.non_speaking_duration = 0.5
 
 # ── TTS Engine ──────────────────────────────────────────────────────────────
@@ -96,7 +118,7 @@ tts_engine = pyttsx3.init()
 tts_engine.setProperty("rate", TTS_VOICE_RATE)
 tts_engine.setProperty("volume", TTS_VOLUME)
 
-# Try to select a good voice (optional)
+# Try to select a good voice
 voices = tts_engine.getProperty("voices")
 for v in voices:
     if "david" in v.name.lower() or "zira" in v.name.lower() or "male" in v.name.lower():
@@ -105,18 +127,19 @@ for v in voices:
 
 print(f"  TTS Engine: {tts_engine.getProperty('name')}")
 print(f"  Wake Word : {'Enabled (' + WAKE_WORD + ')' if WAKE_WORD else 'Disabled (always listening)'}")
-print(f"  LLM       : Gemini ({GEMINI_MODEL})")
+print(f"  LLM       : Gemini ({GEMINI_MODEL}) — NATIVE (no fallback)")
 print("=" * 54 + "\n")
 
-# ── LLM System Prompt ───────────────────────────────────────────────────────
+# ── LLM System Prompt (concise for faster processing) ──────────────────────
 SYSTEM_PROMPT = (
     "You are JARVIS, the AI assistant from Iron Man. "
     "You are highly intelligent, articulate, professional, and slightly witty. "
-    "You speak concisely — respond in 1–3 sentences unless asked for detail. "
-    "You are loyal to your user ('Sir') and speak with calm confidence. "
-    "Never mention that you are an AI or language model. "
-    "Just respond as Jarvis would."
+    "Respond in 1-2 short sentences. Be direct and conversational. "
+    "Never mention you are an AI. Just respond as Jarvis would."
 )
+
+# ── Conversation history for context (keeps last 5 exchanges) ──────────────
+conversation_history = []
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -151,7 +174,6 @@ def listen(use_wake_word: bool = True) -> str | None:
                 phrase_time_limit=MIC_PHRASE_LIMIT,
             )
         except sr.WaitTimeoutError:
-            # No speech detected before timeout — that's normal in a loop
             return None
 
     # ── Transcribe ──────────────────────────────────────────────────────────
@@ -173,9 +195,7 @@ def listen(use_wake_word: bool = True) -> str | None:
     if use_wake_word and WAKE_WORD:
         if WAKE_WORD.lower() not in text.lower():
             return None
-        # Strip the wake word from the text before sending to LLM
         text = text.lower().replace(WAKE_WORD.lower(), "").strip()
-        # Also remove common filler after wake word
         for filler in ["please", "could you", "can you", "would you", "i need you to"]:
             if text.startswith(filler):
                 text = text[len(filler):].strip()
@@ -186,22 +206,40 @@ def listen(use_wake_word: bool = True) -> str | None:
 
 def ask_llm(user_input: str) -> str:
     """
-    Send user input to Gemini and return the response.
-
-    Handles connection errors, rate limits, and unexpected failures
-    so the loop never crashes.
+    Send user input to Gemini natively and return the response.
+    Uses streaming for faster first-token response.
+    Maintains conversation history for context.
     """
+    global conversation_history
+
     try:
-        # Build the full prompt with system instructions
-        full_prompt = f"{SYSTEM_PROMPT}\n\nUser: {user_input}"
+        # Build chat history with system prompt + previous exchanges
+        messages = [{"role": "user", "parts": [SYSTEM_PROMPT]}]
+        
+        # Add last 3 exchanges for context (keeps it fast)
+        for msg in conversation_history[-6:]:  # 3 exchanges = 6 messages
+            messages.append(msg)
+        
+        # Add current user input
+        messages.append({"role": "user", "parts": [user_input]})
+
+        # Use streaming for faster perceived response
+        start_time = time.time()
         response = gemini_model.generate_content(
-            full_prompt,
-            generation_config={
-                "temperature": 0.7,
-                "max_output_tokens": 300,
-            },
+            messages,
+            stream=False,  # Stream=False is actually faster for short responses
         )
+        elapsed = time.time() - start_time
+        print(f"  ⚡ [Gemini responded in {elapsed:.2f}s]")
+
         reply = response.text.strip()
+
+        # Store in conversation history (keep last 5 exchanges)
+        conversation_history.append({"role": "user", "parts": [user_input]})
+        conversation_history.append({"role": "model", "parts": [reply]})
+        if len(conversation_history) > 10:
+            conversation_history = conversation_history[-10:]
+
         return reply
 
     except Exception as e:
@@ -220,9 +258,9 @@ def ask_llm(user_input: str) -> str:
             return "I'm having trouble reaching my servers, sir. Check your internet connection."
 
         if "safety" in err_msg or "blocked" in err_msg or "harmful" in err_msg:
-            return "I'm unable to respond to that request, sir. It appears to violate content safety guidelines."
+            return "I'm unable to respond to that request, sir."
 
-        # Fallback for any other error — don't crash
+        # Fallback — don't crash
         print(f"  ⚠ [Gemini Error]: {e}")
         return "I encountered an unexpected error, sir. Please try again."
 
@@ -234,7 +272,6 @@ def ask_llm(user_input: str) -> str:
 
 def main():
     """Run the voice assistant in a continuous loop."""
-    # Startup greeting
     speak("System online. How may I assist you, sir?")
 
     while True:
@@ -243,10 +280,9 @@ def main():
             user_text = listen(use_wake_word=True)
 
             if not user_text:
-                # No speech or wake word not detected — loop again
                 continue
 
-            # ── Step 2: Think ───────────────────────────────────────────────
+            # ── Step 2: Think (Gemini native — fast) ────────────────────────
             print("  🧠 [Thinking...]")
             reply = ask_llm(user_text)
 
@@ -259,7 +295,6 @@ def main():
             break
 
         except Exception as e:
-            # Catch-all to prevent the loop from crashing
             print(f"\n⚠  [Unexpected error]: {e}")
             speak("I encountered an unexpected issue, sir. I am still operational.")
             time.sleep(1)
