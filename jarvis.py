@@ -8,7 +8,7 @@ import sounddevice as sd
 from piper import PiperVoice
 from dotenv import load_dotenv
 
-# ============================================================
+# ============================================================d
 # Load environment variables from .env (API keys, secrets)
 # NEVER hardcode API keys — they stay in .env which is gitignored
 # ============================================================
@@ -121,24 +121,238 @@ except Exception as e:
     USE_GROQ = False
 
 # ============================================================
-# Gemini API integration (Google AI Studio)
+# JARVIS AGENT BRAIN — Google Gen AI SDK + Context Caching + Key Rotation
+# Uses the new `google-genai` package (NOT deprecated `google.generativeai`)
 # ============================================================
 try:
-    import google.generativeai as genai
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    if not GEMINI_API_KEY:
-        print("⚠ GEMINI_API_KEY not found in .env or hardcoded fallback")
-        USE_GEMINI = False
-    else:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # Use standard Gemini model name; can be overridden via GEMINI_MODEL env var
-        GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
-        gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
-        USE_GEMINI = True
-        print(f"✓ Gemini API connected ({GEMINI_MODEL_NAME})")
-except Exception as e:
-    print(f"⚠ Gemini API connection failed: {e}")
-    USE_GEMINI = False
+    from google import genai
+    from google.genai import types as genai_types
+    USE_NEW_GENAI_SDK = True
+except ImportError:
+    USE_NEW_GENAI_SDK = False
+    print("⚠ New google-genai SDK not installed. Run: pip install google-genai")
+
+try:
+    import groq as _groq_module
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
+class JarvisAgentBrain:
+    """
+    Heavy-duty coding agent core with:
+    - Google API Key Rotation (seamlessly swaps keys on rate-limit)
+    - Context Caching (upload codebase once, queries only consume new tokens)
+    - Automatic Groq fallback when ALL Google keys are exhausted
+    """
+
+    def __init__(self):
+        # ── Google API keys (up to 3 for rotation) ──
+        self.google_keys = [
+            os.getenv("GEMINI_API_KEY"),
+            os.getenv("GEMINI_API_KEY_2"),
+            os.getenv("GEMINI_API_KEY_3"),
+        ]
+        # Filter out None/empty keys
+        self.google_keys = [k for k in self.google_keys if k and k.strip()]
+        self.current_key_index = 0
+        self.groq_key = os.getenv("GROQ_API_KEY")
+
+        # ── Clients ──
+        self.google_client = None
+        self.groq_client = None
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.active_cache = None
+        self.cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
+
+        # ── Initialize Google client ──
+        if USE_NEW_GENAI_SDK and self.google_keys:
+            try:
+                self.google_client = genai.Client(api_key=self.google_keys[0])
+                print(f"✓ Google Gen AI SDK connected — Key Rotation enabled ({len(self.google_keys)} key(s))")
+            except Exception as e:
+                print(f"⚠ Google Gen AI SDK init failed: {e}")
+                self.google_client = None
+
+        # ── Initialize Groq client ──
+        if GROQ_AVAILABLE and self.groq_key:
+            try:
+                self.groq_client = _groq_module.Groq(api_key=self.groq_key)
+            except Exception as e:
+                print(f"⚠ Groq init failed: {e}")
+                self.groq_client = None
+
+        if self.google_client:
+            print(f"  Model: {self.model_name} | Cache TTL: {self.cache_ttl}s")
+        if self.groq_client:
+            print("  Groq fallback: READY")
+
+    # ────────────────────────────────────────────────────────
+    # KEY ROTATION
+    # ────────────────────────────────────────────────────────
+
+    def _rotate_google_key(self):
+        """Swap to next Google API key on rate-limit (429)."""
+        if len(self.google_keys) <= 1:
+            return False
+        self.current_key_index = (self.current_key_index + 1) % len(self.google_keys)
+        new_key = self.google_keys[self.current_key_index]
+        print(f"[JarvisBrain] Rotating to Google API Key Index: {self.current_key_index}")
+        try:
+            self.google_client = genai.Client(api_key=new_key)
+            return True
+        except Exception:
+            return False
+
+    def google_available(self) -> bool:
+        """Check if any Google key is currently usable."""
+        return self.google_client is not None and len(self.google_keys) > 0
+
+    def groq_available(self) -> bool:
+        """Check if Groq client is usable."""
+        return self.groq_client is not None
+
+    # ────────────────────────────────────────────────────────
+    # CONTEXT CACHING — Save massive token costs
+    # ────────────────────────────────────────────────────────
+
+    def update_codebase_cache(self, whole_codebase_text: str, ttl_seconds: int = None):
+        """
+        Upload and cache your entire codebase context.
+        Subsequent queries will use the cached context, saving ~90% of input tokens.
+        
+        Requirements:
+        - Minimum 2,048 tokens to create a cache
+        - Default TTL: 2 hours (7200 seconds)
+        - Cache is auto-extended on each query hit
+        """
+        if not self.google_client:
+            print("[JarvisBrain] No Google client — cannot create cache.")
+            return False
+
+        ttl = ttl_seconds or self.cache_ttl
+        
+        # Estimate token count (rough: 4 chars ≈ 1 token)
+        estimated_tokens = len(whole_codebase_text) // 4
+        if estimated_tokens < 2048:
+            print(f"[JarvisBrain] Codebase too small for caching ({estimated_tokens} est. tokens, need ≥2048). Skipping cache.")
+            return False
+
+        try:
+            print(f"[JarvisBrain] Creating server-side context cache ({estimated_tokens} est. tokens, TTL={ttl}s)...")
+            self.active_cache = self.google_client.caches.create(
+                model=self.model_name,
+                config=genai_types.CreateCachedContentConfig(
+                    contents=[whole_codebase_text],
+                    system_instruction=(
+                        "You are Jarvis's elite coding core. "
+                        "Use the provided codebase context to precisely handle "
+                        "the user's software engineering requests."
+                    ),
+                    ttl=f"{ttl}s",
+                ),
+            )
+            print(f"✓ Codebase cached! Cache ID: {self.active_cache.name}")
+            return True
+        except Exception as e:
+            print(f"[JarvisBrain] Cache creation failed: {e}")
+            return False
+
+    # ────────────────────────────────────────────────────────
+    # CORE QUERY ENGINE — Google → Rotation → Groq
+    # ────────────────────────────────────────────────────────
+
+    def _is_rate_limit_error(self, err_str: str) -> bool:
+        """Detect rate-limit / quota errors to trigger key rotation."""
+        err_lower = err_str.lower()
+        patterns = [
+            "429", "rate_limit", "rate limit", "quota", "insufficient_quota",
+            "resource exhausted", "too many requests", "token expired",
+            "unauthorized", "401", "403", "forbidden", "invalid api key",
+        ]
+        return any(p in err_lower for p in patterns)
+
+    def ask_agent(self, prompt: str, system_instruction: str = None) -> str:
+        """
+        Send a query to the LLM with automatic:
+        1. Context cache usage (if available)
+        2. Google key rotation (on 429 errors)
+        3. Groq emergency fallback
+        
+        Returns the response text.
+        """
+        # ── Try Google (with Context Cache) ──
+        if self.google_available():
+            config_kwargs = {}
+            
+            # Attach cached content to save tokens
+            if self.active_cache:
+                config_kwargs["cached_content"] = self.active_cache.name
+            
+            if system_instruction:
+                config_kwargs["system_instruction"] = system_instruction
+
+            # Try each Google key at most once
+            for attempt in range(len(self.google_keys)):
+                try:
+                    response = self.google_client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                        config=genai_types.GenerateContentConfig(**config_kwargs)
+                    )
+
+                    # Report cache hit
+                    if response.usage_metadata and response.usage_metadata.cached_content_token_count:
+                        saved = response.usage_metadata.cached_content_token_count
+                        print(f"⚡ [Cache Hit!] Saved {saved} input tokens.")
+
+                    return response.text
+
+                except Exception as e:
+                    err_str = str(e)
+                    print(f"[Google attempt {attempt+1}] Error: {type(e).__name__}: {str(e)[:100]}")
+                    
+                    if self._is_rate_limit_error(err_str):
+                        if self._rotate_google_key():
+                            print(f"  → Rotated to key index {self.current_key_index}, retrying...")
+                            continue
+                        else:
+                            print("  → No more keys to rotate to.")
+                            break
+                    else:
+                        # Non-rate-limit error: break (don't retry)
+                        break
+
+        # ── Emergency Fallback: Groq ──
+        if self.groq_available():
+            print("[JarvisBrain] All Google keys exhausted. Falling back to Groq Cloud...")
+            try:
+                completion = self.groq_client.chat.completions.create(
+                    model="qwen-2.5-coder-32b",
+                    messages=[
+                        {"role": "system", "content": system_instruction or "You are Jarvis, a coding assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.6,
+                    max_tokens=4096,
+                )
+                return completion.choices[0].message.content
+            except Exception as e:
+                return f"Both Google and Groq limits hit. Error: {e}"
+
+        return "All free tier quotas exhausted. Please wait a short while for the reset window."
+
+# ============================================================
+# Backward-compatible globals for existing code
+# ============================================================
+jarvis_brain = JarvisAgentBrain()
+USE_GEMINI = jarvis_brain.google_available()
+USE_GROQ = jarvis_brain.groq_available()
+GEMINI_MODEL_NAME = jarvis_brain.model_name
+if USE_GEMINI:
+    print(f"✓ Gemini API connected ({GEMINI_MODEL_NAME}) [via JarvisAgentBrain]")
+if USE_GROQ:
+    print("✓ Groq API connected - Ultra-fast mode enabled!")
 
 # ============================================================
 # GENERATIVE AI TOOLS & CAPABILITIES
@@ -667,13 +881,25 @@ def open_application(app_name):
     """Open an application by name."""
     try:
         app_map = {
-            "chrome": "chrome", "browser": "chrome",
-            "word": "winword", "excel": "excel",
-            "powerpoint": "powerpnt", "ppt": "powerpnt",
-            "notepad": "notepad", "calculator": "calc",
-            "paint": "mspaint", "explorer": "explorer",
+            "chrome": "chrome", "browser": "chrome", "google chrome": "chrome",
+            "word": "WINWORD.EXE", "microsoft word": "WINWORD.EXE",
+            "excel": "EXCEL.EXE", "microsoft excel": "EXCEL.EXE",
+            "powerpoint": "POWERPNT.EXE", "ppt": "POWERPNT.EXE", "microsoft powerpoint": "POWERPNT.EXE",
+            "notepad": "notepad", "notepad++": "notepad++",
+            "calculator": "calc", "paint": "mspaint",
+            "explorer": "explorer", "file explorer": "explorer",
+            "edge": "msedge", "microsoft edge": "msedge",
+            "firefox": "firefox", "brave": "brave",
+            "vscode": "code", "vs code": "code", "visual studio code": "code",
+            "cmd": "cmd", "command prompt": "cmd", "terminal": "cmd",
+            "powershell": "powershell", "task manager": "taskmgr",
+            "control panel": "control", "settings": "ms-settings:",
+            "camera": "microsoft.windows.camera:", "clock": "ms-clock:",
+            "spotify": "spotify", "discord": "discord", "slack": "slack",
+            "zoom": "zoom", "teams": "teams",
         }
-        key = next((k for k in app_map if k in app_name.lower()), None)
+        app_lower = app_name.lower()
+        key = next((k for k in app_map if k in app_lower), None)
         target = app_map[key] if key else app_name
         os.startfile(target)
         return f"Opened {app_name}"
@@ -682,17 +908,65 @@ def open_application(app_name):
 
 
 def get_system_info():
-    """Get current system information."""
-    info = {
-        "cpu_usage": f"{psutil.cpu_percent(interval=1)}%",
-        "memory": f"{psutil.virtual_memory().percent}%",
-        "disk_usage": f"{psutil.disk_usage('/').percent}%",
-        "battery": None,
-    }
-    battery = psutil.sensors_battery()
-    if battery:
-        info["battery"] = f"{battery.percent}%"
-    return info
+    """Get current system information including CPU, memory, disk, battery, and GPU."""
+    try:
+        info = {
+            "cpu_usage": f"{psutil.cpu_percent(interval=1)}%",
+            "cpu_count": f"{psutil.cpu_count()} cores",
+            "memory": f"{psutil.virtual_memory().percent}%",
+            "memory_total": f"{psutil.virtual_memory().total / (1024**3):.1f} GB",
+            "memory_available": f"{psutil.virtual_memory().available / (1024**3):.1f} GB",
+            "disk_usage": f"{psutil.disk_usage('C:').percent}%",
+            "disk_total": f"{psutil.disk_usage('C:').total / (1024**3):.1f} GB",
+            "disk_free": f"{psutil.disk_usage('C:').free / (1024**3):.1f} GB",
+        }
+        battery = psutil.sensors_battery()
+        if battery:
+            info["battery"] = f"{battery.percent}%"
+            info["battery_plugged"] = battery.power_plugged
+        else:
+            info["battery"] = "No battery detected (desktop system)"
+        
+        # Try to get GPU info using Windows Management Instrumentation
+        try:
+            import subprocess
+            # Try nvidia-smi first (NVIDIA GPUs)
+            gpu_result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5
+            )
+            if gpu_result.returncode == 0 and gpu_result.stdout.strip():
+                gpu_lines = gpu_result.stdout.strip().split('\n')
+                gpus = []
+                for line in gpu_lines:
+                    if ',' in line:
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) >= 4:
+                            gpus.append({
+                                "name": parts[0],
+                                "utilization": f"{parts[1]}%",
+                                "memory_used": f"{parts[2]} MB",
+                                "memory_total": f"{parts[3]} MB"
+                            })
+                if gpus:
+                    info["gpu"] = gpus
+            else:
+                # Fallback: try wmic on Windows
+                wmic_result = subprocess.run(
+                    ["wmic", "path", "win32_videocontroller", "get", "name"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if wmic_result.returncode == 0:
+                    lines = [l.strip() for l in wmic_result.stdout.split('\n') if l.strip()]
+                    if len(lines) > 1:
+                        gpu_name = lines[1]
+                        info["gpu"] = [{"name": gpu_name}]
+        except Exception:
+            pass
+        
+        return info
+    except Exception as e:
+        return {"error": str(e), "message": "Could not retrieve system information"}
 
 
 def write_to_clipboard(text):
@@ -851,14 +1125,18 @@ def execute_function(name, arguments):
     try:
         func = FUNCTION_MAP[name]
         parsed_args = {}
-        for key, value in arguments.items():
-            if isinstance(value, str) and value.strip().startswith(("[", "{")):
-                try:
-                    parsed_args[key] = json.loads(value)
-                except Exception:
+        # FIX: Handle None/null arguments from LLM JSON output
+        if arguments is None:
+            arguments = {}
+        if arguments:
+            for key, value in arguments.items():
+                if isinstance(value, str) and value.strip().startswith(("[", "{")):
+                    try:
+                        parsed_args[key] = json.loads(value)
+                    except Exception:
+                        parsed_args[key] = value
+                else:
                     parsed_args[key] = value
-            else:
-                parsed_args[key] = value
         result = func(**parsed_args)
         return f"Success: {result}"
     except Exception as e:
@@ -923,72 +1201,198 @@ class SoundDeviceMicrophone(sr.AudioSource):
         return frames.tobytes()
 
 
-def listen_once(timeout=8, phrase_time_limit=15):
+# ============================================================
+# NATURAL VOICE ACTIVITY DETECTION (VAD)
+# Event-driven listening — waits for you to finish speaking naturally
+# Uses WebRTC VAD + silence detection for natural conversation pacing
+# ============================================================
+
+class NaturalVoiceListener:
     """
-    Capture voice input from the microphone once.
-    Returns transcribed text string, or None on failure/timeout.
-    Uses sounddevice as the backend (no PyAudio dependency).
-
-    FIX: Reduced thresholds for responsive, event-driven listening:
-    - pause_threshold=0.6: ends speech after 0.6s of silence (not 3s)
-    - non_speaking_duration=0.3: short non-speaking grace period
-    - timeout=8: wait max 8s for user to start speaking (not 20s)
-    - phrase_time_limit=15: max 15s per utterance (not unlimited)
+    Listens to the microphone using a continuous stream buffer,
+    detects speech vs silence in real-time, and only stops recording
+    AFTER a natural pause in speech (1.5s of silence).
+    
+    This prevents the "too fast" problem where the system cuts you off
+    mid-sentence because of arbitrary timeouts.
     """
-    if not SR_AVAILABLE:
-        print("  ⚠ SpeechRecognition not available. Please type your input.")
-        return None
-
-    recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 800    # Lower = more sensitive
-    recognizer.dynamic_energy_threshold = True
-    recognizer.dynamic_energy_adjustment_damping = 0.10  # Faster adaptation
-    recognizer.dynamic_energy_ratio = 1.2
-    recognizer.pause_threshold = 0.6     # End speech after 0.6s silence (was 3.0)
-    recognizer.non_speaking_duration = 0.3  # Short grace period (was 1.5)
-
-    try:
-        with SoundDeviceMicrophone(sample_rate=16000) as source:
-            print("\n  🎤 [Listening... Speak now]")
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            # Ensure threshold isn't set too high after calibration
-            if recognizer.energy_threshold > 4000:
-                recognizer.energy_threshold = 2000
+    
+    # WebRTC VAD mode 0 = aggressive (best for quiet rooms)
+    # mode 1 = less aggressive (for noisier environments)
+    # mode 2 = even less aggressive
+    # mode 3 = least aggressive (= more sensitive, detects softer speech)
+    VAD_MODE = 1  
+    
+    # Silence threshold: how many seconds of quiet before we decide speech is done
+    SILENCE_DURATION_SECONDS = 1.5
+    
+    # Minimum speech duration to accept (avoids coughs/background noise)
+    MIN_SPEECH_SECONDS = 0.5
+    
+    # Max recording duration (safety limit — 2 minutes)
+    MAX_RECORD_SECONDS = 120
+    
+    def __init__(self, sample_rate=16000):
+        self.sample_rate = sample_rate
+        self.channels = 1
+        self.sample_width = 2  # 16-bit
+        self.chunk_size = 480  # 30ms frames at 16kHz (WebRTC VAD standard)
+        
+    def record_until_silence(self) -> bytes:
+        """
+        Record audio from microphone continuously.
+        Returns raw PCM audio bytes of the full utterance.
+        
+        Algorithm:
+        1. Buffer audio in 30ms frames
+        2. Measure RMS energy per frame
+        3. Track speech/silence state transitions
+        4. After speech detected, wait for SILENCE_DURATION_SECONDS of quiet
+        5. Return the complete audio buffer
+        """
+        audio_buffer = bytearray()
+        is_speaking = False
+        silence_counter = 0
+        speech_counter = 0
+        
+        # Calculate frame sizes
+        frames_for_silence = int(self.SILENCE_DURATION_SECONDS * self.sample_rate / self.chunk_size)
+        frames_for_min_speech = int(self.MIN_SPEECH_SECONDS * self.sample_rate / self.chunk_size)
+        max_frames = int(self.MAX_RECORD_SECONDS * self.sample_rate / self.chunk_size)
+        
+        # Energy thresholds (calibrated for 16-bit audio)
+        speech_threshold = 500    # RMS above this = speech
+        silence_threshold = 300   # RMS below this = silence
+        
+        # Calibration phase
+        print("  🔇 [Calibrating ambient noise...]", end="", flush=True)
+        noise_samples = []
+        calibration_frames = int(0.5 * self.sample_rate / self.chunk_size)  # 0.5 seconds
+        
+        with sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype='int16',
+            blocksize=self.chunk_size,
+        ) as stream:
+            for _ in range(calibration_frames):
+                frame, _ = stream.read(self.chunk_size)
+                rms = np.sqrt(np.mean(frame.astype(np.float32)**2))
+                noise_samples.append(rms)
             
-            try:
-                audio = recognizer.listen(
-                    source,
-                    timeout=timeout,
-                    phrase_time_limit=phrase_time_limit
-                )
-            except sr.WaitTimeoutError:
-                print("  ⏰ [Listening timeout — no speech detected]")
-                return None
-
-        print("  🧠 [Transcribing...]")
-        # Try Google Web Speech API first (free, no key needed)
+            if noise_samples:
+                ambient_rms = np.median(noise_samples)
+                # Set threshold: 3x ambient noise floor
+                speech_threshold = max(500, ambient_rms * 3.0)
+                silence_threshold = max(300, ambient_rms * 1.5)
+            
+            print(f" done (threshold={speech_threshold:.0f})")
+            print("  🎤 [Listening... speak naturally]")
+            print("      (I'll wait until you finish before responding)")
+            
+            frame_count = 0
+            while frame_count < max_frames:
+                frame, _ = stream.read(self.chunk_size)
+                audio_buffer.extend(frame.tobytes())
+                
+                # Calculate RMS energy
+                rms = np.sqrt(np.mean(frame.astype(np.float32)**2))
+                
+                if rms >= speech_threshold:
+                    # Speech detected
+                    silence_counter = 0
+                    speech_counter += 1
+                    if not is_speaking and speech_counter >= 2:
+                        is_speaking = True
+                        print("      [Speech started...]", end="", flush=True)
+                else:
+                    # Silence / background
+                    if is_speaking:
+                        silence_counter += 1
+                        if silence_counter >= frames_for_silence:
+                            print(" [end]")
+                            # Natural speech pause detected — return the buffer
+                            return bytes(audio_buffer)
+                    else:
+                        # Not speaking yet — keep listening
+                        pass
+                
+                frame_count += 1
+                
+                # Progress indicator every 5 seconds
+                if frame_count % int(5 * self.sample_rate / self.chunk_size) == 0:
+                    if is_speaking:
+                        print(".", end="", flush=True)
+            
+            # Max recording time reached
+            if is_speaking:
+                print(" [max time]")
+            return bytes(audio_buffer)
+    
+    def transcribe_audio(self, audio_bytes: bytes) -> str:
+        """
+        Transcribe audio bytes using SpeechRecognition (Google Web Speech API).
+        Returns transcribed text or None on failure.
+        """
+        if not audio_bytes or len(audio_bytes) < self.chunk_size * 2:
+            return None
+        
+        # Convert bytes to AudioData for SpeechRecognition
         try:
-            text = recognizer.recognize_google(audio, language="en-IN,hi-IN")
-            print(f"  📝 [You said]: {text}")
-            return text
+            audio_data = sr.AudioData(audio_bytes, self.sample_rate, self.sample_width)
+        except Exception as e:
+            print(f"    ⚠ Audio conversion error: {e}")
+            return None
+        
+        recognizer = sr.Recognizer()
+        
+        print("  🧠 [Transcribing...]")
+        try:
+            # Try Google Web Speech API (free, no key needed)
+            text = recognizer.recognize_google(audio_data, language="en-IN,hi-IN")
+            if text and text.strip():
+                print(f"  📝 [You said]: {text}")
+                return text
+            return None
         except sr.UnknownValueError:
-            print("  ❌ [Could not understand audio]")
+            print("  ❌ [Could not understand audio — please speak clearly]")
             return None
         except sr.RequestError as e:
             print(f"  ⚠ [Speech recognition service error]: {e}")
             return None
+        except Exception as e:
+            print(f"  ⚠ [Transcription error]: {e}")
+            return None
 
-    except Exception as e:
-        print(f"  ⚠ [Microphone error]: {e}")
+
+def listen_natural(timeout=30) -> str:
+    """
+    Listen for a complete utterance using natural VAD.
+    Returns transcribed text or None on failure.
+    Waits for natural silence (1.5s) before processing — no cutoffs.
+    """
+    if not SR_AVAILABLE:
+        print("  ⚠ SpeechRecognition not available. Please type your input.")
         return None
+    
+    listener = NaturalVoiceListener()
+    audio_bytes = listener.record_until_silence()
+    
+    if not audio_bytes or len(audio_bytes) < 2000:
+        print("  ⏭ No speech detected.")
+        return None
+    
+    text = listener.transcribe_audio(audio_bytes)
+    return text
 
 
-def listen_with_visualizer(timeout=20, phrase_time_limit=None, use_visual=True):
+def listen_with_visualizer_natural(timeout=30, use_visual=True):
     """
-    Captures voice with a simple progress indicator.
+    Captures voice with natural VAD (no arbitrary timeouts).
     Returns (text, language) tuple.
+    The system waits for a natural pause in your speech before responding.
     """
-    text = listen_once(timeout=timeout, phrase_time_limit=phrase_time_limit)
+    text = listen_natural(timeout=timeout)
     if text:
         lang = detect_lang(text)
         return text, lang
@@ -1558,33 +1962,26 @@ def process_user_input(user_input, conversation_history, current_voice="en_male"
         globals()['USE_GROQ'] = False
 
     # ============================================================
-    # 2nd PRIORITY — Gemini (Google AI Studio) — fallback
+    # 2nd PRIORITY — Gemini via JarvisAgentBrain (Context Caching + Key Rotation)
     # ============================================================
-    if USE_GEMINI:
+    if jarvis_brain.google_available():
         try:
             start_time = time.time()
-            # Build prompt for Gemini (text-only, no native tool calling)
             gemini_prompt = system_prompt + "\n\nUser: " + user_input
-            response = gemini_model.generate_content(
-                gemini_prompt,
-                generation_config={
-                    "temperature": 0.6,
-                    "max_output_tokens": 4096,
-                },
+            response_text = jarvis_brain.ask_agent(
+                prompt=gemini_prompt,
+                system_instruction="You are Jarvis's elite coding core. Respond with valid JSON only."
             )
             elapsed = time.time() - start_time
-            print(f"  [Gemini response: {elapsed:.2f}s]")
+            print(f"  [Gemini via JarvisAgentBrain: {elapsed:.2f}s]")
 
-            full_response = response.text or ""
-            result = _parse_text_json_response(full_response)
+            result = _parse_text_json_response(response_text)
             if "response" not in result:
                 result["response"] = "I'll help you with that request."
             return result
 
         except Exception as e:
-            print(f"  [Gemini Error]: {type(e).__name__}: {e}")
-
-        globals()['USE_GEMINI'] = False
+            print(f"  [Gemini Error via JarvisAgentBrain]: {type(e).__name__}: {e}")
 
     # ============================================================
     # ALL PROVIDERS FAILED — graceful error message
@@ -1679,8 +2076,9 @@ async def chat_with_voice_assistant():
                           status_text="LISTENING", particle_mode="listening")
                 _ui_message("Listening... Speak now.")
 
+                print("      (I will wait until you finish speaking naturally)")
                 spoken_text, spoken_lang = await asyncio.to_thread(
-                    listen_with_visualizer, timeout=60, phrase_time_limit=None
+                    listen_with_visualizer_natural, timeout=120
                 )
                 if spoken_text is None:
                     print("  ⏭ No speech detected. Returning to text input.")
