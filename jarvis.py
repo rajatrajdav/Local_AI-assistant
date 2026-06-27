@@ -877,32 +877,569 @@ def create_resume(name, contact_info, experience, education, skills,
     return filepath
 
 
-def open_application(app_name):
-    """Open an application by name."""
+# ============================================================
+# WEBSITE / WEB APP DATABASE — Opens in default browser
+# ============================================================
+WEBSITE_MAP = {
+    "youtube": "https://www.youtube.com",
+    "yt": "https://www.youtube.com",
+    "youtube music": "https://music.youtube.com",
+    "youtube studio": "https://studio.youtube.com",
+    "google": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "mail": "https://mail.google.com",
+    "email": "https://mail.google.com",
+    "google drive": "https://drive.google.com",
+    "drive": "https://drive.google.com",
+    "google docs": "https://docs.google.com",
+    "docs": "https://docs.google.com",
+    "google sheets": "https://sheets.google.com",
+    "sheets": "https://sheets.google.com",
+    "google slides": "https://slides.google.com",
+    "slides": "https://slides.google.com",
+    "google meet": "https://meet.google.com",
+    "meet": "https://meet.google.com",
+    "google calendar": "https://calendar.google.com",
+    "calendar": "https://calendar.google.com",
+    "google maps": "https://maps.google.com",
+    "maps": "https://maps.google.com",
+    "github": "https://github.com",
+    "git hub": "https://github.com",
+    "stack overflow": "https://stackoverflow.com",
+    "stackoverflow": "https://stackoverflow.com",
+    "facebook": "https://www.facebook.com",
+    "fb": "https://www.facebook.com",
+    "instagram": "https://www.instagram.com",
+    "insta": "https://www.instagram.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "whats app": "https://web.whatsapp.com",
+    "wa": "https://web.whatsapp.com",
+    "twitter": "https://www.twitter.com",
+    "x": "https://www.twitter.com",
+    "linkedin": "https://www.linkedin.com",
+    "reddit": "https://www.reddit.com",
+    "amazon": "https://www.amazon.in",
+    "flipkart": "https://www.flipkart.com",
+    "netflix": "https://www.netflix.com",
+    "hotstar": "https://www.hotstar.com",
+    "prime video": "https://www.primevideo.com",
+    "amazon prime": "https://www.primevideo.com",
+    "spotify web": "https://open.spotify.com",
+    "chatgpt": "https://chat.openai.com",
+    "chat gpt": "https://chat.openai.com",
+    "openai": "https://chat.openai.com",
+    "bard": "https://bard.google.com",
+    "gemini": "https://gemini.google.com",
+    "google ai": "https://gemini.google.com",
+    "claude": "https://claude.ai",
+    "perplexity": "https://www.perplexity.ai",
+    "canva": "https://www.canva.com",
+    "zoom web": "https://zoom.us",
+    "teams web": "https://teams.microsoft.com",
+    "slack web": "https://slack.com",
+    "notion": "https://www.notion.so",
+    "medium": "https://medium.com",
+    "dev.to": "https://dev.to",
+    "wikipedia": "https://en.wikipedia.org",
+    "wiki": "https://en.wikipedia.org",
+    "quora": "https://www.quora.com",
+    "pinterest": "https://in.pinterest.com",
+    "telegram web": "https://web.telegram.org",
+    "discord web": "https://discord.com/app",
+    "trello": "https://trello.com",
+    "jira": "https://www.atlassian.com/software/jira",
+    "bitbucket": "https://bitbucket.org",
+    "gitlab": "https://gitlab.com",
+    "npm": "https://www.npmjs.com",
+    "pypi": "https://pypi.org",
+    "pythonanywhere": "https://www.pythonanywhere.com",
+    "replit": "https://replit.com",
+    "code pen": "https://codepen.io",
+    "codepen": "https://codepen.io",
+    "figma": "https://www.figma.com",
+    "dribbble": "https://dribbble.com",
+    "behance": "https://www.behance.net",
+    "unsplash": "https://unsplash.com",
+    "pexels": "https://www.pexels.com",
+    "pixabay": "https://pixabay.com",
+    "spotify": "https://open.spotify.com",
+}
+
+
+# ============================================================
+# SYSTEM / DESKTOP APPLICATION MAP (exe names + aliases)
+# ============================================================
+# Keys are lowercase aliases users might say.
+# Values are what we pass to os.startfile() — can be a .exe name,
+# a protocol URI (ms-settings:), or a direct path.
+# ============================================================
+APP_MAP = {
+    # ── Browsers ──
+    "chrome": "chrome",
+    "google chrome": "chrome",
+    "browser": "chrome",
+    "edge": "msedge",
+    "microsoft edge": "msedge",
+    "firefox": "firefox",
+    "mozilla firefox": "firefox",
+    "brave": "brave",
+    "opera": "opera",
+    "browser brave": "brave",
+    "browser chrome": "chrome",
+    "browser firefox": "firefox",
+
+    # ── Microsoft Office ──
+    "word": "WINWORD.EXE",
+    "microsoft word": "WINWORD.EXE",
+    "ms word": "WINWORD.EXE",
+    "excel": "EXCEL.EXE",
+    "microsoft excel": "EXCEL.EXE",
+    "ms excel": "EXCEL.EXE",
+    "powerpoint": "POWERPNT.EXE",
+    "ppt": "POWERPNT.EXE",
+    "microsoft powerpoint": "POWERPNT.EXE",
+    "ms powerpoint": "POWERPNT.EXE",
+    "outlook": "OUTLOOK.EXE",
+    "microsoft outlook": "OUTLOOK.EXE",
+    "ms outlook": "OUTLOOK.EXE",
+    "onenote": "ONENOTE.EXE",
+    "microsoft onenote": "ONENOTE.EXE",
+    "access": "MSACCESS.EXE",
+    "microsoft access": "MSACCESS.EXE",
+    "publisher": "MSPUB.EXE",
+    "microsoft publisher": "MSPUB.EXE",
+    "teams": "teams",
+    "microsoft teams": "teams",
+    "ms teams": "teams",
+
+    # ── Windows System Tools ──
+    "notepad": "notepad",
+    "notepad++": "notepad++",
+    "calculator": "calc",
+    "calc": "calc",
+    "paint": "mspaint",
+    "microsoft paint": "mspaint",
+    "file explorer": "explorer",
+    "explorer": "explorer",
+    "windows explorer": "explorer",
+    "cmd": "cmd",
+    "command prompt": "cmd",
+    "terminal": "cmd",
+    "powershell": "powershell",
+    "windows powershell": "powershell",
+    "task manager": "taskmgr",
+    "taskmgr": "taskmgr",
+    "control panel": "control",
+    "settings": "ms-settings:",
+    "windows settings": "ms-settings:",
+    "device manager": "devmgmt.msc",
+    "disk management": "diskmgmt.msc",
+    "disk cleanup": "cleanmgr",
+    "registry editor": "regedit",
+    "regedit": "regedit",
+    "system information": "msinfo32",
+    "resource monitor": "resmon",
+    "performance monitor": "perfmon",
+    "services": "services.msc",
+    "task scheduler": "taskschd.msc",
+    "event viewer": "eventvwr.msc",
+    "snipping tool": "SnippingTool",
+    "snip and sketch": "SnippingTool",
+    "screenshot tool": "SnippingTool",
+    "magnifier": "Magnify",
+    "narrator": "Narrator",
+    "on screen keyboard": "osk",
+    "osk": "osk",
+    "character map": "charmap",
+    "command": "cmd",
+
+    # ── Windows Store / Modern Apps ──
+    "camera": "microsoft.windows.camera:",
+    "windows camera": "microsoft.windows.camera:",
+    "clock": "ms-clock:",
+    "alarms": "ms-clock:",
+    "alarm": "ms-clock:",
+    "calculator (modern)": "calculator:",
+    "calendar (modern)": "outlookcal:",
+    "mail (modern)": "outlookmail:",
+    "maps (modern)": "bingmaps:",
+    "news": "msnnews:",
+    "weather": "bingweather:",
+    "xbox": "xbox:",
+    "xbox app": "xbox:",
+    "store": "ms-windows-store:",
+    "microsoft store": "ms-windows-store:",
+    "windows store": "ms-windows-store:",
+    "photos": "ms-photos:",
+    "windows photos": "ms-photos:",
+    "music": "ms-wvvmusic:",
+    "groove music": "ms-wvvmusic:",
+    "video": "ms-wvvideo:",
+    "movies & tv": "ms-wvvideo:",
+    "tips": "ms-get-started:",
+    "feedback hub": "feedback-hub:",
+    "solitare": "ms-solitaire:",
+    "microsoft solitare": "ms-solitaire:",
+    "whiteboard": "whiteboard:",
+    "microsoft whiteboard": "whiteboard:",
+
+    # ── Development Tools ──
+    "vscode": "code",
+    "vs code": "code",
+    "visual studio code": "code",
+    "code": "code",
+    "visual studio": "devenv",
+    "vs": "devenv",
+    "pycharm": "pycharm",
+    "jetbrains pycharm": "pycharm",
+    "intellij": "idea",
+    "intellij idea": "idea",
+    "webstorm": "webstorm",
+    "phpstorm": "phpstorm",
+    "android studio": "studio64",
+    "eclipse": "eclipse",
+    "sublime text": "sublime_text",
+    "atom": "atom",
+    "git bash": "git-bash",
+    "git": "git-bash",
+    "postman": "postman",
+    "docker": "docker",
+    "docker desktop": "docker",
+    "node.js": "node",
+    "python (idle)": "idle",
+    "thonny": "thonny",
+    "jupyter": "jupyter-notebook",
+    "jupyter notebook": "jupyter-notebook",
+    "anaconda": "anaconda-navigator",
+    "anaconda navigator": "anaconda-navigator",
+    "vmware": "vmware",
+    "virtualbox": "virtualbox",
+    "putty": "putty",
+    "winscp": "winscp",
+    "filezilla": "filezilla",
+    "mysql workbench": "mysqlworkbench",
+    "sql server": "ssms",
+    "ssms": "ssms",
+    "azure data studio": "azuredatastudio",
+
+    # ── Communication & Social ──
+    "discord": "discord",
+    "slack": "slack",
+    "zoom": "zoom",
+    "zoom meeting": "zoom",
+    "zoom client": "zoom",
+    "skype": "skype",
+    "telegram": "telegram",
+    "whatsapp desktop": "whatsapp",
+    "whatsapp": "whatsapp",
+    "signal": "signal",
+    "thunderbird": "thunderbird",
+    "mozilla thunderbird": "thunderbird",
+
+    # ── Media & Entertainment ──
+    "vlc": "vlc",
+    "vlc media player": "vlc",
+    "media player": "wmplayer",
+    "windows media player": "wmplayer",
+    "spotify": "spotify",
+    "itunes": "itunes",
+    "kodi": "kodi",
+    "plex": "plex",
+    "foobar2000": "foobar2000",
+    "audacity": "audacity",
+    "obs": "obs64",
+    "obs studio": "obs64",
+    "streamlabs obs": "streamlabs-obs",
+    "steam": "steam",
+    "epic games": "epicgameslauncher",
+    "epic games launcher": "epicgameslauncher",
+
+    # ── Graphics & Design ──
+    "photoshop": "photoshop",
+    "adobe photoshop": "photoshop",
+    "illustrator": "illustrator",
+    "adobe illustrator": "illustrator",
+    "premiere pro": "adobepremierepro",
+    "adobe premiere pro": "adobepremierepro",
+    "after effects": "afterfx",
+    "adobe after effects": "afterfx",
+    "lightroom": "lightroom",
+    "adobe lightroom": "lightroom",
+    "adobe acrobat": "acrobat",
+    "acrobat": "acrobat",
+    "acrobat reader": "acrobat",
+    "pdf reader": "acrobat",
+    "gimp": "gimp",
+    "blender": "blender",
+    "coreldraw": "coreldraw",
+    "inkscape": "inkscape",
+    "figma (desktop)": "figma",
+    "canva (desktop)": "canva",
+
+    # ── Utilities ──
+    "winrar": "winrar",
+    "win rar": "winrar",
+    "7-zip": "7zfm",
+    "7zip": "7zfm",
+    "7 zip": "7zfm",
+    "cpu-z": "cpuz",
+    "gpu-z": "gpuz",
+    "hwmonitor": "hwmonitor",
+    "hw monitor": "hwmonitor",
+    "speccy": "speccy",
+    "ccleaner": "ccleaner",
+    "malwarebytes": "mbam",
+    "antivirus": "mbam",
+    "defender": "WindowsDefender",
+    "windows defender": "WindowsDefender",
+    "one drive": "onedrive",
+    "onedrive": "onedrive",
+    "dropbox": "dropbox",
+    "google drive (desktop)": "googledrivesync",
+    "evernote": "evernote",
+    "lastpass": "lastpass",
+    "1password": "1password",
+}
+
+
+def _find_app_in_registry(app_name_lower: str) -> str | None:
+    """
+    Search Windows Registry for installed applications by name.
+    Checks both 64-bit and 32-bit registry locations.
+    Returns the full path to the executable if found, None otherwise.
+    """
+    import winreg
+    
+    registry_paths = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+    ]
+    
+    # First try: search by exact name + .exe
+    exe_name = app_name_lower.strip()
+    if not exe_name.endswith('.exe'):
+        exe_name += '.exe'
+    
+    for hive, path in registry_paths:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                try:
+                    with winreg.OpenKey(key, exe_name) as subkey:
+                        value, _ = winreg.QueryValueEx(subkey, "")
+                        if value and os.path.exists(value):
+                            return value
+                except FileNotFoundError:
+                    pass
+        except FileNotFoundError:
+            continue
+    
+    # Second try: enumerate all keys and do a partial name match
+    for hive, path in registry_paths:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                i = 0
+                while True:
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        i += 1
+                        # Check if the app name contains our search term or vice versa
+                        base_name = subkey_name.lower().replace('.exe', '').replace('_', ' ')
+                        if (app_name_lower in base_name or base_name in app_name_lower):
+                            try:
+                                with winreg.OpenKey(key, subkey_name) as subkey:
+                                    value, _ = winreg.QueryValueEx(subkey, "")
+                                    if value and os.path.exists(value):
+                                        return value
+                            except (FileNotFoundError, OSError):
+                                pass
+                    except FileNotFoundError:
+                        break
+        except FileNotFoundError:
+            continue
+    
+    return None
+
+
+def _find_app_in_start_menu(app_name_lower: str) -> str | None:
+    """
+    Search Windows Start Menu shortcuts (.lnk files) for the app.
+    Checks both All Users and Current User start menu directories.
+    Returns the full path to the .lnk file if found.
+    """
+    start_menu_paths = [
+        os.path.join(os.environ.get("PROGRAMDATA", "C:\\ProgramData"), "Microsoft", "Windows", "Start Menu", "Programs"),
+        os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs"),
+    ]
+    
+    for base_path in start_menu_paths:
+        if not os.path.exists(base_path):
+            continue
+        for root, dirs, files in os.walk(base_path):
+            for file in files:
+                if file.endswith('.lnk'):
+                    file_lower = file.lower().replace('.lnk', '')
+                    # Check if app name matches the shortcut name
+                    if (app_name_lower in file_lower or file_lower in app_name_lower):
+                        return os.path.join(root, file)
+                    # Also check if folder name matches (e.g., "Spotify" folder)
+                    folder_name = os.path.basename(root).lower()
+                    if app_name_lower in folder_name or folder_name in app_name_lower:
+                        return os.path.join(root, file)
+        # Also check folder names at the top level
+        for d in dirs:
+            if app_name_lower in d.lower() or d.lower() in app_name_lower:
+                folder_path = os.path.join(base_path, d)
+                for f in os.listdir(folder_path):
+                    if f.endswith('.lnk'):
+                        return os.path.join(folder_path, f)
+    
+    return None
+
+
+def _find_app_in_program_files(app_name_lower: str) -> str | None:
+    """
+    Search Program Files directories for executables matching the app name.
+    """
+    program_dirs = [
+        os.environ.get("ProgramFiles", "C:\\Program Files"),
+        os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", ""),
+        os.environ.get("APPDATA", ""),
+    ]
+    
+    search_exe = app_name_lower.strip()
+    if not search_exe.endswith('.exe'):
+        search_exe += '.exe'
+    
+    for base_dir in program_dirs:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+        try:
+            for root, dirs, files in os.walk(base_dir, topdown=True):
+                # Limit search depth to avoid extreme delays
+                depth = root.replace(base_dir, '').count(os.sep)
+                if depth > 4:
+                    dirs.clear()  # Don't go deeper
+                    continue
+                for file in files:
+                    file_lower = file.lower()
+                    if file_lower == search_exe:
+                        full_path = os.path.join(root, file)
+                        if os.path.exists(full_path):
+                            return full_path
+                    # Also check if the folder name matches (common pattern)
+                    folder_name = os.path.basename(root).lower()
+                    if (app_name_lower in folder_name or folder_name in app_name_lower) and file_lower.endswith('.exe'):
+                        # Pick the first reasonable exe (not uninstall, not setup)
+                        if 'unins' not in file_lower and 'setup' not in file_lower and 'install' not in file_lower:
+                            full_path = os.path.join(root, file)
+                            if os.path.exists(full_path):
+                                return full_path
+        except (PermissionError, OSError):
+            continue
+    
+    return None
+
+
+def _find_app_on_path(app_name_lower: str) -> str | None:
+    """
+    Search the system PATH for the executable (using `where` command on Windows).
+    """
     try:
-        app_map = {
-            "chrome": "chrome", "browser": "chrome", "google chrome": "chrome",
-            "word": "WINWORD.EXE", "microsoft word": "WINWORD.EXE",
-            "excel": "EXCEL.EXE", "microsoft excel": "EXCEL.EXE",
-            "powerpoint": "POWERPNT.EXE", "ppt": "POWERPNT.EXE", "microsoft powerpoint": "POWERPNT.EXE",
-            "notepad": "notepad", "notepad++": "notepad++",
-            "calculator": "calc", "paint": "mspaint",
-            "explorer": "explorer", "file explorer": "explorer",
-            "edge": "msedge", "microsoft edge": "msedge",
-            "firefox": "firefox", "brave": "brave",
-            "vscode": "code", "vs code": "code", "visual studio code": "code",
-            "cmd": "cmd", "command prompt": "cmd", "terminal": "cmd",
-            "powershell": "powershell", "task manager": "taskmgr",
-            "control panel": "control", "settings": "ms-settings:",
-            "camera": "microsoft.windows.camera:", "clock": "ms-clock:",
-            "spotify": "spotify", "discord": "discord", "slack": "slack",
-            "zoom": "zoom", "teams": "teams",
-        }
-        app_lower = app_name.lower()
-        key = next((k for k in app_map if k in app_lower), None)
-        target = app_map[key] if key else app_name
-        os.startfile(target)
-        return f"Opened {app_name}"
+        exe_name = app_name_lower.strip()
+        if not exe_name.endswith('.exe'):
+            exe_name += '.exe'
+        result = subprocess.run(
+            ["where", exe_name],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            paths = [p.strip() for p in result.stdout.strip().split('\n') if p.strip()]
+            for p in paths:
+                if os.path.exists(p):
+                    return p
+    except Exception:
+        pass
+    return None
+
+
+def open_application(app_name):
+    """
+    Open an application or website by name.
+    
+    First checks if the name matches a known website (opens in default browser).
+    Then checks the app map for known applications.
+    Then searches Windows Registry, Start Menu, Program Files, and PATH.
+    
+    Supports:
+    - Web apps: "youtube", "gmail", "github", "facebook", "instagram", etc.
+    - System apps: "notepad", "calculator", "cmd", etc.
+    - Office apps: "word", "excel", "powerpoint", etc.
+    - Installed apps: "spotify", "discord", "vscode", "steam", etc.
+    - Any app found in Windows Registry or Start Menu
+    """
+    try:
+        app_lower = app_name.strip().lower()
+        
+        # ── STEP 1: Check if it's a website/web app ──
+        # Match against known website names
+        for key, url in WEBSITE_MAP.items():
+            if key in app_lower or app_lower in key:
+                import webbrowser
+                webbrowser.open(url)
+                return f"Opened {app_name} in your default browser"
+        
+        # If it contains common web patterns, try as URL
+        if any(ext in app_lower for ext in ['.com', '.org', '.net', '.io', '.ai', '.app']):
+            if not app_lower.startswith('http'):
+                url = 'https://' + app_lower
+            else:
+                url = app_lower
+            import webbrowser
+            webbrowser.open(url)
+            return f"Opened {app_name} in your default browser"
+        
+        # ── STEP 2: Check the app map ──
+        for key, target in APP_MAP.items():
+            if key in app_lower or app_lower in key:
+                os.startfile(target)
+                return f"Opened {app_name}"
+        
+        # ── STEP 3: Search Windows Registry ──
+        registry_path = _find_app_in_registry(app_lower)
+        if registry_path:
+            os.startfile(registry_path)
+            return f"Opened {app_name} (found in Windows Registry)"
+        
+        # ── STEP 4: Search Start Menu ──
+        start_menu_path = _find_app_in_start_menu(app_lower)
+        if start_menu_path:
+            os.startfile(start_menu_path)
+            return f"Opened {app_name} (found in Start Menu)"
+        
+        # ── STEP 5: Search Program Files ──
+        program_files_path = _find_app_in_program_files(app_lower)
+        if program_files_path:
+            os.startfile(program_files_path)
+            return f"Opened {app_name} (found in Program Files)"
+        
+        # ── STEP 6: Search PATH ──
+        path_exe = _find_app_on_path(app_lower)
+        if path_exe:
+            os.startfile(path_exe)
+            return f"Opened {app_name} (found on system PATH)"
+        
+        # ── STEP 7: Final fallback — try os.startfile directly ──
+        # This may fail but we attempt it as a last resort
+        try:
+            os.startfile(app_lower)
+            return f"Opened {app_name}"
+        except Exception:
+            pass
+        
+        return f"Could not find {app_name}. Please check the name and try again."
+        
     except Exception as e:
         return f"Failed to open {app_name}: {str(e)}"
 
