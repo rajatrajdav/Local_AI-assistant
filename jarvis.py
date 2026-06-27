@@ -121,6 +121,40 @@ except Exception as e:
     USE_GROQ = False
 
 # ============================================================
+# CEREBRAS AI SDK — Native fallback LLM
+# Uses the Cerebras Cloud SDK directly (no openai dependency needed)
+# ============================================================
+try:
+    from cerebras.cloud.sdk import Cerebras
+    CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
+    if CEREBRAS_API_KEY:
+        cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
+        USE_CEREBRAS = True
+        print("✓ Cerebras Cloud SDK connected — Fallback LLM ready!")
+    else:
+        USE_CEREBRAS = False
+except ImportError:
+    try:
+        from openai import OpenAI
+        CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
+        if CEREBRAS_API_KEY:
+            cerebras_client = OpenAI(
+                api_key=CEREBRAS_API_KEY,
+                base_url="https://api.cerebras.ai/v1",
+            )
+            USE_CEREBRAS = True
+            print("✓ Cerebras Cloud (OpenAI-compat) connected — Fallback LLM ready!")
+        else:
+            USE_CEREBRAS = False
+    except Exception as e2:
+        print(f"⚠ Cerebras Cloud unavailable: Install either with: pip install cerebras-cloud-sdk or pip install openai")
+        USE_CEREBRAS = False
+except Exception as e:
+    print(f"⚠ Cerebras Cloud init failed: {e}")
+    USE_CEREBRAS = False
+
+
+# ============================================================
 # JARVIS AGENT BRAIN — Google Gen AI SDK + Context Caching + Key Rotation
 # Uses the new `google-genai` package (NOT deprecated `google.generativeai`)
 # ============================================================
@@ -1444,6 +1478,212 @@ def open_application(app_name):
         return f"Failed to open {app_name}: {str(e)}"
 
 
+def search_web(query: str, num_results: int = 5) -> str:
+    """
+    Search the web using DuckDuckGo and return summarized results.
+    Uses duckduckgo_search library for privacy-respecting web searches.
+    """
+    try:
+        from duckduckgo_search import DDGS
+        results = []
+        with DDGS() as ddgs:
+            for i, r in enumerate(ddgs.text(query, max_results=num_results)):
+                if r.get('title') and r.get('href'):
+                    results.append(f"{i+1}. {r['title']}\n   URL: {r['href']}\n   {r.get('body', '')[:200]}")
+        if results:
+            return "Web Search Results:\n\n" + "\n\n".join(results)
+        return f"No results found for: {query}"
+    except ImportError:
+        return "Web search requires duckduckgo_search. Install with: pip install duckduckgo-search"
+    except Exception as e:
+        return f"Web search failed: {str(e)}"
+
+
+def search_files_on_computer(query: str, directory: str = None) -> str:
+    """
+    Search for files on the computer by name/pattern.
+    Searches recursively in the given directory (default: C: drive top-level).
+    """
+    if directory is None:
+        directory = os.path.expanduser("~")
+    try:
+        matches = []
+        query_lower = query.lower()
+        for root, dirs, files in os.walk(directory, topdown=True):
+            # Limit depth to avoid extreme delays
+            depth = root.replace(directory, '').count(os.sep)
+            if depth > 3:
+                dirs.clear()
+                continue
+            for file in files:
+                if query_lower in file.lower():
+                    filepath = os.path.join(root, file)
+                    try:
+                        size = os.path.getsize(filepath)
+                        size_str = f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
+                        matches.append(f"{filepath} ({size_str})")
+                    except:
+                        matches.append(filepath)
+                    if len(matches) >= 20:
+                        break
+            if len(matches) >= 20:
+                break
+        if matches:
+            return f"Found {len(matches)} file(s) matching '{query}':\n\n" + "\n".join(matches)
+        return f"No files found matching '{query}' in {directory}"
+    except Exception as e:
+        return f"File search failed: {str(e)}"
+
+
+def read_file_content(filepath: str) -> str:
+    """
+    Read and return the contents of a text file.
+    Handles common text file types and limits output to prevent overflow.
+    """
+    try:
+        if not os.path.exists(filepath):
+            return f"File not found: {filepath}"
+        if not os.path.isfile(filepath):
+            return f"Not a file: {filepath}"
+        
+        # Check file size (limit to 1MB)
+        size = os.path.getsize(filepath)
+        if size > 1_048_576:
+            return f"File too large ({size/1024/1024:.1f} MB). Cannot read files over 1 MB."
+        
+        # Try to read as text
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(filepath, 'r', encoding='latin-1') as f:
+                    content = f.read()
+            except:
+                return f"Cannot read file: {filepath} (binary or unsupported encoding)"
+        
+        # Limit output to 5000 characters
+        if len(content) > 5000:
+            content = content[:5000] + f"\n\n... [truncated, {len(content)} total characters]"
+        
+        return f"Contents of {filepath}:\n\n{content}"
+    except Exception as e:
+        return f"Failed to read file: {str(e)}"
+
+
+def execute_system_command(command: str) -> str:
+    """
+    Execute a system command and return its output.
+    WARNING: Only safe, read-only commands should be executed.
+    """
+    try:
+        # Block dangerous commands
+        dangerous = ['rm -rf', 'format', 'del /f', 'rd /s', 'shutdown', 'restart', 'reboot']
+        for d in dangerous:
+            if d in command.lower():
+                return f"Command blocked for safety: contains '{d}'"
+        
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = ""
+        if result.stdout:
+            output += result.stdout[:2000]
+        if result.stderr:
+            output += f"\n[STDERR]: {result.stderr[:500]}"
+        if not output:
+            output = "Command executed successfully (no output)"
+        return f"Command: {command}\n\n{output}"
+    except subprocess.TimeoutExpired:
+        return "Command timed out (30s limit)"
+    except Exception as e:
+        return f"Command execution failed: {str(e)}"
+
+
+def list_running_processes(filter_str: str = None) -> str:
+    """
+    List running processes, optionally filtered by name.
+    """
+    try:
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
+            try:
+                pinfo = proc.info
+                name = pinfo['name'] or ''
+                if filter_str and filter_str.lower() not in name.lower():
+                    continue
+                processes.append(f"PID:{pinfo['pid']:6d}  CPU:{pinfo['cpu_percent']:5.1f}%  MEM:{pinfo['memory_percent']:5.1f}%  {name}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        if not processes:
+            return f"No processes found matching '{filter_str}'" if filter_str else "No processes found"
+        
+        # Sort by CPU usage descending, show top 30
+        processes.sort(key=lambda x: float(x.split('CPU:')[1].split('%')[0]), reverse=True)
+        top = processes[:30]
+        return f"Running Processes (top {len(top)}):\n\n" + "\n".join(top)
+    except Exception as e:
+        return f"Failed to list processes: {str(e)}"
+
+
+def take_screenshot(filename: str = None) -> str:
+    """
+    Take a screenshot and save it to the generated_files directory.
+    """
+    try:
+        import pyautogui
+        if filename is None:
+            filename = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        if not filename.endswith('.png'):
+            filename += '.png'
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        
+        screenshot = pyautogui.screenshot()
+        screenshot.save(filepath)
+        return f"Screenshot saved to: {filepath}"
+    except ImportError:
+        return "Screenshot requires pyautogui. Install with: pip install pyautogui"
+    except Exception as e:
+        return f"Screenshot failed: {str(e)}"
+
+
+def get_current_time() -> str:
+    """Get the current date and time."""
+    now = datetime.now()
+    return f"Current date and time: {now.strftime('%A, %B %d, %Y at %I:%M:%S %p')}"
+
+
+def calculate(expression: str) -> str:
+    """
+    Evaluate a mathematical expression safely.
+    Supports: +, -, *, /, **, %, (), math functions
+    """
+    try:
+        # Only allow safe mathematical operations
+        allowed_chars = set('0123456789+-*/.%()eE \t')
+        safe = all(c in allowed_chars or c.isalpha() for c in expression)
+        if not safe:
+            return "Expression contains disallowed characters"
+        
+        # Use a restricted eval with only math module
+        import math
+        result = eval(expression, {"__builtins__": {}}, {
+            "abs": abs, "round": round, "int": int, "float": float,
+            "min": min, "max": max, "sum": sum, "pow": pow,
+            "pi": math.pi, "e": math.e, "sqrt": math.sqrt,
+            "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "log": math.log, "log10": math.log10, "floor": math.floor, "ceil": math.ceil,
+        })
+        return f"{expression} = {result}"
+    except Exception as e:
+        return f"Calculation error: {str(e)}"
+
+
 def get_system_info():
     """Get current system information including CPU, memory, disk, battery, and GPU."""
     try:
@@ -1642,6 +1882,112 @@ AVAILABLE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Search the web using DuckDuckGo and return summarized results with titles and URLs",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"},
+                    "num_results": {"type": "integer", "description": "Number of results to return (default 5)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files_on_computer",
+            "description": "Search for files on the computer by name/pattern in a directory",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Filename or pattern to search for"},
+                    "directory": {"type": "string", "description": "Directory to search in (default: user home folder)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file_content",
+            "description": "Read and return the contents of a text file from the computer",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Full path to the file to read"},
+                },
+                "required": ["filepath"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_system_command",
+            "description": "Execute a system command and return its output. Use for running CLI tools, checking system status, etc. SAFETY: destructive commands like format/shutdown are blocked.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to execute"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_running_processes",
+            "description": "List running processes on the computer, optionally filtered by name",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filter_str": {"type": "string", "description": "Optional filter to match process names"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": "Take a screenshot and save it to the generated_files directory",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Optional filename ending in .png"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Get the current date and time",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": "Evaluate a mathematical expression (supports +, -, *, /, **, %, sqrt, sin, cos, etc.)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "The mathematical expression to evaluate"},
+                },
+                "required": ["expression"],
+            },
+        },
+    },
 ]
 
 FUNCTION_MAP = {
@@ -1652,6 +1998,14 @@ FUNCTION_MAP = {
     "get_system_info": get_system_info,
     "write_to_clipboard": write_to_clipboard,
     "create_file": create_file,
+    "search_web": search_web,
+    "search_files_on_computer": search_files_on_computer,
+    "read_file_content": read_file_content,
+    "execute_system_command": execute_system_command,
+    "list_running_processes": list_running_processes,
+    "take_screenshot": take_screenshot,
+    "get_current_time": get_current_time,
+    "calculate": calculate,
 }
 
 
@@ -2200,10 +2554,20 @@ TOOLS AVAILABLE:
 - create_word_document(title, content, filename)
 - create_presentation(title, slides_content, filename)
 - create_resume(name, contact_info, experience, education, skills, filename)
-- open_application(app_name)
-- get_system_info()
-- write_to_clipboard(text)
-- create_file(filename, content)
+- open_application(app_name) — Opens apps by name (browsers, Office, system tools, etc.)
+- search_web(query, num_results=5) — Search the web using DuckDuckGo
+- search_files_on_computer(query, directory) — Search for files on your computer by name
+- read_file_content(filepath) — Read the contents of a text file
+- execute_system_command(command) — Run CLI commands (destructive commands blocked)
+- list_running_processes(filter_str) — List running processes
+- take_screenshot(filename) — Take a screenshot
+- get_system_info() — Get CPU, memory, disk, battery, GPU info
+- get_current_time() — Get the current date and time
+- calculate(expression) — Evaluate a math expression
+- write_to_clipboard(text) — Write text to clipboard
+- create_file(filename, content) — Create a text file
+- read_clipboard() — Read text from clipboard
+- list_files(directory) — List files in a directory
 
 PRESENTATION THEME SYSTEM (AUTO-SELECTED based on topic):
 1. "corporate_edge" — Dark charcoal background, teal & lime green accents, geometric frames.
@@ -2499,7 +2863,38 @@ def process_user_input(user_input, conversation_history, current_voice="en_male"
         globals()['USE_GROQ'] = False
 
     # ============================================================
-    # 2nd PRIORITY — Gemini via JarvisAgentBrain (Context Caching + Key Rotation)
+    # 2nd PRIORITY — Cerebras Cloud (OpenAI-compatible, fast fallback)
+    # Uses the zai-glm-4.7 model for high-quality responses
+    # ============================================================
+    if USE_CEREBRAS:
+        try:
+            start_time = time.time()
+            print("  [Cerebras Fallback: Processing...]")
+            response = cerebras_client.chat.completions.create(
+                model="zai-glm-4.7",
+                messages=context_messages,
+                temperature=0.6,
+                max_tokens=4096,
+            )
+            elapsed = time.time() - start_time
+            print(f"  [Cerebras response: {elapsed:.2f}s]")
+
+            result = _parse_text_json_response(
+                response.choices[0].message.content or ""
+            )
+            if "response" not in result:
+                result["response"] = "I'll help you with that request."
+            return result
+
+        except Exception as e:
+            print(f"  [Cerebras Error]: {type(e).__name__}: {e}")
+            if _is_token_error(e):
+                print("  ⚠ Cerebras token exhausted / rate-limited.")
+            else:
+                print("  ⚠ Cerebras failed.")
+
+    # ============================================================
+    # 3rd PRIORITY — Gemini via JarvisAgentBrain (Context Caching + Key Rotation)
     # ============================================================
     if jarvis_brain.google_available():
         try:
@@ -2566,72 +2961,172 @@ async def speak_handler(text, voice_key):
 # MAIN CHAT LOOP
 # ============================================================
 
+# ============================================================
+# PERMISSION CONFIRMATION — Ask user before executing actions
+# ============================================================
+
+_ACTION_KEYWORDS_OPEN = ["open", "launch", "start", "run", "play"]
+_ACTION_KEYWORDS_EXECUTE = ["execute", "run command", "delete", "remove", "format", "shutdown"]
+
+
+async def confirm_action(action_description: str) -> bool:
+    """
+    Ask user for permission before executing sensitive actions.
+    Uses simple text prompt only — avoids recreating microphone listeners
+    that interfere with the main voice loop.
+    """
+    print(f"\n  ⚠️  PERMISSION REQUIRED: {action_description}")
+    print(f"  [Type 'y' or press Enter to proceed, type anything else to cancel]: ", end="")
+    
+    try:
+        text_input = (await asyncio.to_thread(input, "")).strip().lower()
+        if text_input in ["y", "yes", "yeah", "ok", "okay", ""]:
+            print(f"  ✅ Permission granted.")
+            return True
+        else:
+            print(f"  ❌ Permission denied.")
+            return False
+    except Exception:
+        print(f"  ❌ Permission denied.")
+        return False
+
+
+# ============================================================
+# WAKE WORD DETECTION — Always-on voice trigger
+# ============================================================
+
+def detect_wake_word(text: str) -> bool:
+    """Detect if text contains a wake word to activate voice command mode."""
+    if not text:
+        return False
+    text_lower = text.strip().lower()
+    wake_words = [
+        "jarvis", "hey jarvis", "ok jarvis", "jarvis!",
+        "simmi", "hey simmi", "ok simmi", "simmi!",
+        "जार्विस", "हे जार्विस", "सिमी", "हे सिमी",
+        "assistant", "hey assistant",
+    ]
+    for word in wake_words:
+        if text_lower.startswith(word) or text_lower == word:
+            return True
+    return False
+
+
+def strip_wake_word(text: str) -> str:
+    """Remove the wake word from the beginning of text."""
+    text = text.strip()
+    wake_patterns = [
+        "hey jarvis", "ok jarvis", "hey jarvis!", "ok jarvis!",
+        "hey simmi", "ok simmi", "hey simmi!", "ok simmi!",
+        "jarvis", "simmi", "jarvis!", "simmi!",
+        "हे जार्विस", "जार्विस", "हे सिमी", "सिमी",
+        "hey assistant", "assistant",
+    ]
+    text_lower = text.lower()
+    for pattern in sorted(wake_patterns, key=len, reverse=True):
+        if text_lower.startswith(pattern):
+            text = text[len(pattern):].strip()
+            break
+    return text
+
+
+# ============================================================
+# MAIN CHAT LOOP — Voice-first with always-on listening
+# ============================================================
+
 async def chat_with_voice_assistant():
     print("\n" + "=" * 62)
-    print("         AI ASSISTANT — VOICE CONTROLLED (v2.0)")
+    print("         J.A.R.V.I.S — VOICE AI ASSISTANT (v3.0)")
     print("=" * 62)
     print("\n  Personalities & Voices:")
     for key, info in VOICES.items():
         p = get_personality(key)
         print(f"    • {p['name']:8s} — {info['name']}")
-    print("\n  Input Methods:")
-    print("    • Type your message and press Enter")
-    print("    • Type 'v' then Enter to use voice (speak into mic)")
-    print("    • Type 'exit' or 'quit' to end")
-    print("    • Address 'Jarvis' or 'Simmi' by name to switch voice")
+    print("\n  🔴 Always-on voice mode")
+    print("  ⌨️  Just start typing to switch to text input")
+    print("  🗣️  Say 'Jarvis' or 'Simmi' as wake word to get my attention")
+    print("  🔒 Permission required before opening apps or executing commands")
+    print("  📝 Say 'exit' or 'quit' to end the session")
     print("=" * 62 + "\n")
 
     conversation_history = []
     current_voice = "en_male"
-    initial_personality = get_personality(current_voice)
 
     # Initial UI state
     _ui_update(
         current_voice="en_male",
-        status_text="SYSTEM ONLINE",
+        status_text="ALWAYS LISTENING",
         voice_active=True,
         speaking=False,
-        listening=False,
+        listening=True,
         processing=False,
-        particle_mode="idle",
+        particle_mode="listening",
     )
-    _ui_message("System Online. Welcome back, sir.")
+    _ui_message("J.A.R.V.I.S Online. Ready for voice or text commands.")
+    print("  🎤 [Always listening — just speak naturally, or type anything]")
+    print("  🌐 [Example: 'search for AI news', 'open youtube', 'play despacito', 'search on google for weather']")
 
-    welcome_text = "System Online. Welcome back, sir."
+    welcome_text = "System Online. Ready for commands."
     await speak_handler(welcome_text, current_voice)
+
+    # ── Track state ──
+    wake_mode = False
+    pending_voice_response = False
 
     while True:
         try:
-            # ── Show input prompt ──
-            print(f"\n  [Enter text or 'v' for voice]: ", end="")
-            raw_input = (await asyncio.to_thread(input, "")).strip()
+            user_input = None
+            clean_input = None
 
-            # ── Voice input mode (type 'v' or 'voice' to trigger) ──
-            if raw_input.lower() in ["v", "voice", "mic", "speak"]:
-                print(f"  🎤 Voice input mode activated...")
-                _ui_update(listening=True, speaking=False, processing=False,
-                          status_text="LISTENING", particle_mode="listening")
-                _ui_message("Listening... Speak now.")
-
-                print("      (I will wait until you finish speaking naturally)")
-                spoken_text, spoken_lang = await asyncio.to_thread(
-                    listen_with_visualizer_natural, timeout=120
-                )
-                if spoken_text is None:
-                    print("  ⏭ No speech detected. Returning to text input.")
-                    _ui_update(listening=False, status_text="STANDBY", particle_mode="idle")
-                    _ui_message("No speech detected.")
-                    continue
-                user_input = spoken_text
+            # ── Voice mode: listen for speech naturally ──
+            if not pending_voice_response:
+                print(f"\r  🎤 [Listening... say a command or type]", end="", flush=True)
+                _ui_update(listening=True, status_text="LISTENING", particle_mode="listening")
             else:
-                user_input = raw_input
+                pending_voice_response = False
 
-            clean_input = user_input.strip()
+            spoken_text, spoken_lang = await asyncio.to_thread(
+                listen_with_visualizer_natural, timeout=120
+            )
 
+            if spoken_text is None:
+                # No speech detected — try text input as fallback
+                try:
+                    print(f"\r  ⌨️  [Type your command]: ", end="", flush=True)
+                    raw_input = await asyncio.wait_for(
+                        asyncio.to_thread(input, ""),
+                        timeout=5.0
+                    )
+                    if raw_input and raw_input.strip():
+                        user_input = raw_input.strip()
+                        clean_input = user_input
+                        print()
+                    else:
+                        continue
+                except asyncio.TimeoutError:
+                    continue
+                except EOFError:
+                    break
+            else:
+                user_input = spoken_text
+                clean_input = spoken_text
+                print(f"\n  📝 [You said]: {clean_input}")
+
+            # ── Process the command ──
             if not clean_input:
                 continue
 
-            if clean_input.lower() in ["exit", "quit", "bye", "goodbye"]:
+            # Wake word check: strip it if present, but process anyway
+            if detect_wake_word(clean_input):
+                wake_mode = True
+                clean_input = strip_wake_word(clean_input)
+                if not clean_input:
+                    print("  🗣️ Yes sir? How can I help?")
+                    await speak_handler("Yes sir? How can I help you?", current_voice)
+                    continue
+
+            # Exit check
+            if clean_input.lower() in ["exit", "quit", "bye", "goodbye", "shutdown", "stop"]:
                 farewell = "Goodbye! Have a wonderful day!"
                 _ui_update(speaking=True, status_text="SPEAKING", particle_mode="speaking")
                 _ui_message("Goodbye! Have a wonderful day!")
@@ -2644,21 +3139,29 @@ async def chat_with_voice_assistant():
                       status_text="PROCESSING", particle_mode="processing")
             _ui_message(f"Processing: {clean_input[:60]}...")
 
-            detected_personality = detect_target_personality(user_input)
-            detected_lang = detect_lang(user_input)
+            # Personality & language detection
+            detected_personality = detect_target_personality(clean_input)
+            detected_lang = detect_lang(clean_input)
 
             new_voice = None
             switch_reason = None
 
             if detected_personality == "jarvis":
                 new_voice = "hi_male" if detected_lang == "hi" else "en_male"
-                switch_reason = f"User addressed Jarvis"
+                switch_reason = "User addressed Jarvis"
             elif detected_personality == "simmi":
                 new_voice = "en_female"
                 switch_reason = "User addressed Simmi"
             elif detected_lang == "hi" and current_voice != "hi_male":
                 new_voice = "hi_male"
                 switch_reason = "Hindi language detected"
+            # Auto-switch if wake word was used with a different name
+            if wake_mode and not new_voice:
+                # If in text mode and wake word was JARVIS -> prefer en_male
+                voice_name = get_personality(current_voice)["name"]
+                if "Simmi" in voice_name and "jarvis" in clean_input.lower():
+                    new_voice = "en_male"
+                    switch_reason = "Wake word 'Jarvis' detected"
 
             if new_voice and new_voice != current_voice:
                 old_voice = current_voice
@@ -2671,12 +3174,12 @@ async def chat_with_voice_assistant():
                 print(f"  {'─' * 52}")
 
             print(f"  [Voice: {VOICES[current_voice]['name']}] Processing...")
-            result = process_user_input(user_input, conversation_history, current_voice)
+            result = process_user_input(clean_input, conversation_history, current_voice)
 
+            # Voice switch via LLM
             if result.get("voice_preference") and result["voice_preference"] != current_voice:
-                llm_suggested = result["voice_preference"]
                 old_voice = current_voice
-                current_voice = llm_suggested
+                current_voice = result["voice_preference"]
                 _ui_update(current_voice=current_voice)
                 _ui_message(f"LLM switched to {VOICES[current_voice]['name']}")
                 print(f"\n  {'─' * 52}")
@@ -2684,22 +3187,28 @@ async def chat_with_voice_assistant():
                 print(f"  📝 Reason: {result.get('reason', 'LLM context analysis')}")
                 print(f"  {'─' * 52}")
 
+            # ── Execute tool automatically (no permission prompt) ──
             tool_result = None
             if result.get("tool_call"):
                 tool_call = result["tool_call"]
-                print(f"\n  🔧 Executing: {tool_call['name']}")
-                _ui_message(f"Executing: {tool_call['name']}")
-                tool_result = execute_function(
-                    tool_call["name"], tool_call.get("arguments", {})
-                )
+                tool_name = tool_call["name"]
+                tool_args = tool_call.get("arguments", {})
+                
+                print(f"\n  🔧 Executing: {tool_name}")
+                _ui_message(f"Executing: {tool_name}")
+                tool_result = execute_function(tool_name, tool_args)
                 print(f"  ✓ {tool_result}")
                 _ui_message(f"✓ {tool_result[:80]}")
-
+            
+            # Build response
             ai_response = result["response"]
-            if tool_result:
-                ai_response = f"{ai_response} The file has been created and opened automatically."
+            if tool_result and "Permission denied" not in str(tool_result):
+                if "Success" in str(tool_result):
+                    ai_response = f"{ai_response}. Done! {tool_result.replace('Success: ', '')}"
+                else:
+                    ai_response = f"{ai_response}. {tool_result}"
 
-            conversation_history.append({"role": "user", "content": user_input})
+            conversation_history.append({"role": "user", "content": clean_input})
             conversation_history.append({"role": "assistant", "content": ai_response})
 
             # ── Speaking state ──
@@ -2710,12 +3219,21 @@ async def chat_with_voice_assistant():
 
             await speak_handler(ai_response, current_voice)
 
-            # ── Back to idle ──
+            # ── Drain microphone buffer (wait for TTS echoes to fade) ──
+            print(f"\r  ⏳ [Waiting 2s for audio to settle...]", end="", flush=True)
             _ui_update(speaking=False, processing=False, listening=False,
-                      status_text="STANDBY", particle_mode="idle")
+                      status_text="COOLDOWN", particle_mode="idle")
+            await asyncio.sleep(2.0)
+            
+            # ── Back to listening ──
+            _ui_update(listening=True, status_text="ALWAYS LISTENING", particle_mode="listening")
+            wake_mode = False
 
         except KeyboardInterrupt:
             print("\n\nInterrupted by user.")
+            break
+        except EOFError:
+            print("\n\nInput stream ended.")
             break
         except Exception as e:
             print(f"\n[Unexpected Error]: {e}")
@@ -2723,6 +3241,8 @@ async def chat_with_voice_assistant():
             _ui_message(f"Error: {str(e)[:60]}")
             import traceback
             traceback.print_exc()
+            # Reset to listening mode
+            _ui_update(listening=True, status_text="LISTENING", particle_mode="listening")
             continue
 
     # Cleanup
