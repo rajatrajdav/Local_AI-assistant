@@ -6,7 +6,7 @@ import re
 import numpy as np
 import sounddevice as sd
 from piper import PiperVoice
-from dotenv import load_dotenv
+from dotenv import load_doten
 
 # ============================================================d
 # Load environment variables from .env (API keys, secrets)
