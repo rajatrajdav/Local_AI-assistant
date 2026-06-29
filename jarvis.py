@@ -2621,7 +2621,7 @@ PROFESSIONAL CONTENT GENERATION RULES (MANDATORY):
    a) title: A specific, descriptive slide title (not generic like "Introduction")
    b) content: 4-6 bullet points, each being a COMPLETE SENTENCE of 20+ words
       explaining a real concept, fact, or implication clearly.
-   c) image_query: A specific 2-4 word Pexels search term relevant to slide topic.
+   c) image_query: A specific 2-4 word search term relevant to slide topic.
 
    SLIDE STRUCTURE (follow this order):
    Slide 1: Comprehensive Introduction & Background
@@ -2650,8 +2650,66 @@ PROFESSIONAL CONTENT GENERATION RULES (MANDATORY):
        "image_query": "technology"
    }}
 
-4. All generated content must be factually accurate, domain-specific, and professional.
-5. Never generate placeholder or template text — always generate real content.
+4. SPECIAL RULES FOR CULTURAL/HISTORICAL/RELIGIOUS/MYTHOLOGICAL TOPICS:
+   When the topic is about mythology, religion, history, epics (e.g., Mahabharat, Ramayana, 
+   Sri Krishna, Shiva, Buddha, Bhagavad Gita, etc.), your content MUST follow a 
+   STORYTELLING APPROACH with narrative flow:
+   
+   a) TELL THE STORY: Structure the presentation like a narrative journey.
+      - Start with the origins/background (how it began)
+      - Build up the conflict/tension (what happened and why)
+      - Introduce key characters and their motivations
+      - Describe the climax/turning point
+      - End with resolution and aftermath
+      For Mahabharat: Begin with King Shantanu and Ganga, the Kuru dynasty lineage, 
+      the rivalry between Pandavas and Kauravas, the dice game, exile, war at Kurukshetra, 
+      and the aftermath. Tell it as an epic story, not just facts.
+   
+   b) WHY IT HAPPENED: Explain the causes, context, and reasons behind events.
+      For Mahabharat: Explain the dynastic conflict, succession dispute, political tensions.
+      For Ramayana: Explain the purpose of Lord Rama's avatar and the chain of events.
+      For Bhagavad Gita: Explain Arjuna's dilemma and Krishna's philosophical discourse.
+   
+   c) WHEN IT HAPPENED: Provide historical and mythological timeframe references.
+      For Mahabharat: Mention the traditional dating (approx 3100 BCE), Kuru dynasty timeline.
+      For Ramayana: Mention the Treta Yuga, traditional dating of the events.
+      Always mention: "According to traditional Hindu chronology..." or 
+      "As recorded in ancient texts..." rather than just one date.
+   
+   d) KEY CHARACTERS INVOLVED: Describe the main figures, their roles, significance.
+      For Mahabharat: Explain Pandavas, Kauravas, Krishna's role, Bhishma, Dronacharya, Karna.
+      For Ramayana: Explain Rama, Sita, Lakshmana, Hanuman, Ravana, their attributes.
+   
+   e) SOURCES: Mention the primary source texts and scriptures.
+      For Mahabharat: "As described in the Mahabharata epic (author: Vyasa), consisting of 100,000 verses..."
+      For Ramayana: "According to the Ramayana by Valmiki, one of the largest ancient epics..."
+      For Bhagavad Gita: "As taught in the Bhagavad Gita, a 700-verse scripture within the Mahabharata..."
+      Also mention: translations, commentaries, and scholarly interpretations.
+   
+   f) HOW IT INSPIRES US: Explain the contemporary relevance and life lessons.
+      - What moral/ethical lessons can we learn from this story?
+      - How does it apply to modern life, leadership, decision-making?
+      - What values does it teach (dharma, duty, courage, devotion)?
+      - How has it influenced art, literature, philosophy, and culture?
+      For Mahabharat: The concept of dharma (righteous duty), the complexity of moral 
+      choices, the Bhagavad Gita's teachings on action without attachment, the role of 
+      destiny vs free will, how these lessons apply to modern leadership and ethics.
+   
+   g) IMAGE_QUERY GUIDELINES FOR CULTURAL TOPICS:
+      Use character names + context for image queries, e.g.:
+      - For slide about Krishna: "Lord Krishna painting" or "Krishna Bhagavad Gita art"
+      - For slide about Mahabharat: "Mahabharata war art" or "Mahabharat characters"
+      - For slide about Arjuna: "Arjuna character Mahabharata" or "Arjuna archer"
+      - For slide about Rama: "Lord Rama Ramayana" or "Rama Sita artwork"
+      - For slide about Hanuman: "Lord Hanuman painting" or "Hanuman artwork"
+      Do NOT use generic queries like "mythology images" or "god photos" — be specific.
+   
+   h) SLIDE COUNT: The number of slides should be appropriate to tell the complete story.
+      For epics like Mahabharat: 12-15 slides recommended to cover the full narrative arc.
+      For simpler topics: 10 slides minimum. Let the story determine the length.
+
+5. All generated content must be factually accurate, domain-specific, and professional.
+6. Never generate placeholder or template text — always generate real content.
 
 TOOL CALL FORMAT:
 When you need to execute a tool/function, include a "tool_call" field in your JSON response:

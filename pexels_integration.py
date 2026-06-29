@@ -17,6 +17,25 @@ from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 
 # ============================================================
+# Cultural / Historical Image Search Integration
+# Routes cultural topics (Mahabharat, Ramayana, etc.) to
+# alternative image sources (Wikipedia, DuckDuckGo) instead of
+# Pexels stock photos.
+# ============================================================
+try:
+    from cultural_image_search import (
+        get_best_image_for_topic,
+        is_cultural_topic,
+        get_enhanced_pexels_query,
+    )
+    CULTURAL_SEARCH_AVAILABLE = True
+except ImportError:
+    CULTURAL_SEARCH_AVAILABLE = False
+    def get_best_image_for_topic(topic, slide_number=0): return None
+    def is_cultural_topic(topic): return False, []
+    def get_enhanced_pexels_query(topic): return None
+
+# ============================================================
 # Load environment variables (API keys from .env)
 # ============================================================
 load_dotenv()
@@ -242,14 +261,52 @@ def search_videos_for_presentation(query: str, count: int = 3) -> List[Dict]:
 
 
 def download_background_image(query: str, slide_number: int = 0) -> Optional[str]:
+    """
+    Download a background image for a slide.
+    For cultural/religious/historical topics (e.g., Mahabharat, Krishna, Ramayana),
+    uses Wikipedia and DuckDuckGo image search instead of Pexels stock photos.
+    Falls back to Pexels for general topics.
+    """
+    # FIRST: Check if this is a cultural/historical/religious topic
+    # and try to get an authentic image from Wikipedia or DuckDuckGo
+    if CULTURAL_SEARCH_AVAILABLE:
+        enhanced_query = get_enhanced_pexels_query(query)
+        
+        # Try cultural image sources first
+        cultural_image = get_best_image_for_topic(query, slide_number)
+        if cultural_image and os.path.exists(cultural_image):
+            return cultural_image
+        
+        # For cultural topics, use enhanced Pexels query as fallback
+        if enhanced_query:
+            client = get_pexels_client()
+            photos = client.search_for_presentation(enhanced_query, count=5)
+            if not photos:
+                photos = client.search_photos(
+                    enhanced_query, per_page=5, orientation="landscape", size="large"
+                )
+            if photos:
+                # Use slide_number to pick a different photo for each slide
+                photo_index = slide_number % len(photos)
+                photo = photos[photo_index]
+                filename = f"slide_{slide_number}_cultural_{photo['id']}.jpg"
+                save_path = os.path.join(MEDIA_DIR, filename)
+                downloaded = client.download_photo(photo["src"], save_path)
+                if downloaded:
+                    print(f"  ✓ Downloaded cultural background: {enhanced_query} → {save_path}")
+                    return downloaded
+    
+    # STANDARD Pexels search for general topics
     client = get_pexels_client()
-    photos = client.search_for_presentation(query, count=3)
+    photos = client.search_for_presentation(query, count=5)
     if not photos:
         photos = client.search_photos(
-            query, per_page=3, orientation="landscape", size="large"
+            query, per_page=5, orientation="landscape", size="large"
         )
     if photos:
-        photo = photos[0]
+        # Use slide_number to pick a different photo for each slide
+        photo_index = slide_number % len(photos)
+        photo = photos[photo_index]
         filename = f"slide_{slide_number}_background_{photo['id']}.jpg"
         save_path = os.path.join(MEDIA_DIR, filename)
         downloaded = client.download_photo(photo["src"], save_path)
