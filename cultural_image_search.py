@@ -41,7 +41,7 @@ if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             _image_cache = json.load(f)
     except Exception:
-        _image_cache = {}
+        _image_cache = {
 
 # ── Cultural Topic Database ────────────────────────────────────
 # Topics that need culturally relevant images instead of stock photos
