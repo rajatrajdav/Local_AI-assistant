@@ -128,7 +128,7 @@ def is_cultural_topic(topic: str) -> Tuple[bool, List[str]]:
     # Check exact or partial matches against our database
     for keyword, queries in CULTURAL_KEYWORDS.items():
         if keyword in topic_lower or topic_lower in keyword:
-            return True, querie
+            return True, queries
     
     # Broader detection: check for cultural/religious indicators
     cultural_indicators = [
