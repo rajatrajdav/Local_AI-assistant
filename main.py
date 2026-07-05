@@ -38,7 +38,7 @@ def main():
     print()
 
     # Import and run jarvis.py's async main loop
-    from jarvis import chat_with_voice_assistan
+    from jarvis import chat_with_voice_assistant
 
     import asyncio
     try:
