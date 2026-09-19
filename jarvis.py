@@ -3138,7 +3138,7 @@ async def speak_handler(text, voice_key):
     FIX #1: Normalizes text before sending to Piper TTS engine.
     """
     if voice_key not in VOICES:
-        print(f"[Error] Unknown voice key: {voice_key}")
+        print(f"[Error] Unknown voice key: {voice_ke}")
         return
 
     voice_info = VOICES[voice_key]
