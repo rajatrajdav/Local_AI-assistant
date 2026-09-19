@@ -618,8 +618,7 @@ class CreativeSlideDesigner:
             # Dramatic centered — large bold white on dark
             self.add_accent_bar(slide, 0, Inches(3.0), self.slide_width, Pt(2))
 
-            tbox = slide.shapes.add_textbox(hii 
-                                            i
+            tbox = slide.shapes.add_textbox(
                 Inches(1.0), Inches(1.8), Inches(11.3), Inches(2.2),
             )
             tf = tbox.text_frame

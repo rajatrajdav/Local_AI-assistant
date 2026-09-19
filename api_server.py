@@ -22,6 +22,16 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ================================================================
+# Windows robustness: force UTF-8 so Unicode glyphs (✓ ⚠ —)
+# never crash stdout with UnicodeEncodeError on cp1252 consoles.
+# ================================================================
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # ── App setup ─────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=None)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -51,6 +61,43 @@ try:
 except Exception as e:
     print(f"⚠ Groq connection failed: {e}")
 
+# ================================================================
+# LLM MODEL RESOLUTION — Groq made llama-3.3-70b-versatile
+# Enterprise-only, so auto-pick a model this account can access.
+# Override the choice with GROQ_MODEL in .env.
+# ================================================================
+GROQ_MODEL_CANDIDATES = [
+    (os.getenv("GROQ_MODEL") or "").strip(),
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "qwen/qwen3.8-27b",
+]
+GROQ_MODEL_CANDIDATES = [c for c in GROQ_MODEL_CANDIDATES if c]
+
+
+def _resolve_groq_model():
+    if not GROQ_MODEL_CANDIDATES:
+        return None
+    if groq_client is not None:
+        try:
+            resp = groq_client.models.list()
+            items = getattr(resp, "data", None) or resp
+            ids = [m.id for m in items if hasattr(m, "id")]
+            if ids:
+                for name in GROQ_MODEL_CANDIDATES:
+                    if name in ids:
+                        return name
+                return ids[0]
+        except Exception as e:
+            print(f"  ⚠ Groq model discovery failed ({e}); using configured fallback.")
+    return GROQ_MODEL_CANDIDATES[0]
+
+
+GROQ_MODEL_NAME = _resolve_groq_model()
+if USE_GROQ and GROQ_MODEL_NAME:
+    print(f"  ✓ Groq model resolved: {GROQ_MODEL_NAME}")
 # ================================================================
 # PIPER TTS
 # ================================================================
@@ -221,7 +268,7 @@ def chat_with_llm(user_input, conversation_history=None, personality="en_male"):
         messages.append({"role": "user", "content": user_input})
 
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL_NAME,
             messages=messages,
             temperature=0.6,
             max_tokens=4096,

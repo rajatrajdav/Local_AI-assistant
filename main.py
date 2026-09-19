@@ -24,6 +24,16 @@ else:
 os.environ["JARVIS_BASE_DIR"] = BASE_DIR
 os.chdir(BASE_DIR)  # Ensure CWD is the project root for voice file paths
 
+# ================================================================
+# Windows robustness: force UTF-8 so Unicode glyphs never crash
+# stdout with UnicodeEncodeError on cp1252 consoles.
+# ================================================================
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 
 def main():
     """Run the native console-based voice assistant (jarvis.py)."""

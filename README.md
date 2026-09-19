@@ -58,7 +58,15 @@ Create a `.env` file in the project root with your API keys:
 ```bash
 # .env — copy this template and fill in your keys
 GROQ_API_KEY=gsk_your_groq_api_key_here
+CEREBRAS_API_KEY=your_cerebras_api_key_here   # (optional) backup LLM
 PEXELS_API_KEY=your_pexels_api_key_here
+
+# Optional — pin the LLM model used by each provider.
+# When unset, Jarvis auto-discovers an available model at startup
+# (this was added because llama-3.3-70b-versatile and zai-glm-4.7
+#  were made Enterprise-only / archived by their providers).
+# GROQ_MODEL=openai/gpt-oss-20b
+# CEREBRAS_MODEL=cerebras-llama-3.3-70b
 ```
 
 The `.env` file is already listed in `.gitignore` so it will never be pushed to GitHub.

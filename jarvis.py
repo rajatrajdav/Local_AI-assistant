@@ -15,6 +15,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================
+# Windows robustness: force UTF-8 on stdout/stderr.
+# The app prints Unicode glyphs (✓ ⚠ —) which crash on the
+# default cp1252 console/pipe encoding with UnicodeEncodeError.
+# ============================================================
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+del _sys, _stream
+
+# ============================================================
 # Console-mode UI stubs (ui_jarvis.py removed)
 # These no-op functions allow jarvis.py to run in pure console mode
 # without requiring the GUI/UI module.
@@ -154,6 +167,83 @@ except Exception as e:
     USE_CEREBRAS = False
 
 
+# ============================================================
+# LLM MODEL RESOLUTION — auto-pick valid model IDs at runtime
+# The previously hardcoded IDs (llama-3.3-70b-versatile and
+# zai-glm-4.7) broke because Groq made that model Enterprise-only
+# and Cerebras archived zai-glm-4.7. We now query the provider's
+# model list and select the first one this account can access,
+# falling back through candidates. You can pin a specific model
+# with GROQ_MODEL / CEREBRAS_MODEL in .env.
+# ============================================================
+
+# Candidate models, best → worst. A GROQ_MODEL / CEREBRAS_MODEL
+# value from .env is put first so it wins when it's set.
+GROQ_MODEL_CANDIDATES = [
+    (os.getenv("GROQ_MODEL") or "").strip(),
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "qwen/qwen3.8-27b",
+]
+GROQ_MODEL_CANDIDATES = [c for c in GROQ_MODEL_CANDIDATES if c]
+
+CEREBRAS_MODEL_CANDIDATES = [
+    (os.getenv("CEREBRAS_MODEL") or "").strip(),
+    "cerebras-llama-3.3-70b",
+    "cerebras-llama-3.1-8b",
+    "cerebras-gpt-oss-120b",
+    "cerebras-gpt-oss-20b",
+]
+CEREBRAS_MODEL_CANDIDATES = [c for c in CEREBRAS_MODEL_CANDIDATES if c]
+
+
+def _list_model_ids(client):
+    """Best-effort list of model IDs a provider currently serves."""
+    if client is None:
+        return None
+    try:
+        resp = client.models.list()
+    except Exception:
+        return None
+    # SDKs (Groq/OpenAI) expose `.data`; the native Cerebras SDK
+    # returns a ModelListResponse that also has `.data`. Fall back
+    # to iterating the raw response if `.data` is missing.
+    items = getattr(resp, "data", None)
+    if items is None:
+        items = resp
+    ids = []
+    for m in items:
+        mid = m.id if hasattr(m, "id") else None
+        if mid:
+            ids.append(mid)
+    return ids
+
+
+def _pick_model_name(client, candidates, provider):
+    """Return the first candidate the provider actually serves."""
+    if not candidates:
+        return None
+    ids = _list_model_ids(client)
+    if ids:
+        for name in candidates:
+            if name in ids:
+                return name
+        # No candidate matched — reuse a live id instead of a dead one.
+        return ids[0]
+    if ids is None:
+        print(f"  ⚠ {provider}: could not list models ({client and 'client ok' or 'no client'}); using configured fallback.")
+    return candidates[0]
+
+
+GROQ_MODEL_NAME = _pick_model_name(groq_client, GROQ_MODEL_CANDIDATES, "Groq")
+CEREBRAS_MODEL_NAME = _pick_model_name(cerebras_client, CEREBRAS_MODEL_CANDIDATES, "Cerebras")
+
+if USE_GROQ and GROQ_MODEL_NAME:
+    print(f"  ✓ Groq model resolved: {GROQ_MODEL_NAME}")
+if USE_CEREBRAS and CEREBRAS_MODEL_NAME:
+    print(f"  ✓ Cerebras model resolved: {CEREBRAS_MODEL_NAME}")
 # ============================================================
 # JARVIS AGENT BRAIN — Google Gen AI SDK + Context Caching + Key Rotation
 # Uses the new `google-genai` package (NOT deprecated `google.generativeai`)
@@ -1780,6 +1870,26 @@ AVAILABLE_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "json",
+            "description": (
+                "Structured JSON output container. Reasoning models (e.g. openai/gpt-oss-*) "
+                "emit their required JSON result through this 'json' tool. DO NOT execute it, "
+                "its 'arguments' are the final structured response dict (which may itself "
+                "contain a 'tool_call' to run)."
+            ),
+            "parameters": {
+                # Permissive schema: this 'json' tool is only a passthrough
+                # container for the model's structured answer. Strict typing
+                # made Groq raise tool_use_failed (e.g. `voice_preference: null`
+                # rejected against a "string" type), so allow any object.
+                "type": "object",
+                "additionalProperties": True,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_word_document",
             "description": "Create a detailed, professional Word document with title and comprehensive content",
             "parameters": {
@@ -2028,6 +2138,12 @@ def execute_function(name, arguments):
                         parsed_args[key] = value
                 else:
                     parsed_args[key] = value
+        # Normalize argument aliases that reasoning models (openai/gpt-oss-*)
+        # may produce even though the system prompt says "app_name".
+        if name == "open_application":
+            if "application_name" in parsed_args and "app_name" not in parsed_args:
+                parsed_args["app_name"] = parsed_args.pop("application_name")
+
         result = func(**parsed_args)
         return f"Success: {result}"
     except Exception as e:
@@ -2762,10 +2878,31 @@ def process_user_input(user_input, conversation_history, current_voice="en_male"
         result = {}
         if api_response.choices[0].message.tool_calls:
             tool_call = api_response.choices[0].message.tool_calls[0]
-            result["tool_call"] = {
-                "name": tool_call.function.name,
-                "arguments": json.loads(tool_call.function.arguments),
-            }
+            name = tool_call.function.name
+            args_text = tool_call.function.arguments or "{}"
+
+            # Reasoning models (openai/gpt-oss-*) emit their whole JSON result
+            # through a built-in "json" tool. Unwrap it as the final structured
+            # dict (it may contain a nested "tool_call" to execute later) instead
+            # of treating it as a real tool to run.
+            if name == "json":
+                try:
+                    inner = json.loads(args_text)
+                    if isinstance(inner, dict):
+                        result.update(inner)
+                        return result
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                result = {
+                    "voice_preference": None,
+                    "response_language": "en",
+                    "intent_detected": False,
+                    "reason": "Assumed json tool output",
+                    "response": "Processing your request.",
+                }
+                return result
+
+            result["tool_call"] = {"name": name, "arguments": json.loads(args_text)}
             result["voice_preference"] = None
             result["response_language"] = "en"
             result["intent_detected"] = False
@@ -2866,7 +3003,7 @@ def process_user_input(user_input, conversation_history, current_voice="en_male"
         try:
             start_time = time.time()
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=GROQ_MODEL_NAME,
                 messages=context_messages,
                 temperature=0.6,
                 max_tokens=4096,
@@ -2893,7 +3030,7 @@ def process_user_input(user_input, conversation_history, current_voice="en_male"
                 try:
                     start_time = time.time()
                     response = groq_client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                        model=GROQ_MODEL_NAME,
                         messages=context_messages,
                         temperature=0.6,
                         max_tokens=8192,  # More tokens for embedded tool call JSON
@@ -2922,14 +3059,14 @@ def process_user_input(user_input, conversation_history, current_voice="en_male"
 
     # ============================================================
     # 2nd PRIORITY — Cerebras Cloud (OpenAI-compatible, fast fallback)
-    # Uses the zai-glm-4.7 model for high-quality responses
+    # Model is auto-resolved (see CEREBRAS_MODEL_NAME above).
     # ============================================================
     if USE_CEREBRAS:
         try:
             start_time = time.time()
             print("  [Cerebras Fallback: Processing...]")
             response = cerebras_client.chat.completions.create(
-                model="zai-glm-4.7",
+                model=CEREBRAS_MODEL_NAME,
                 messages=context_messages,
                 temperature=0.6,
                 max_tokens=4096,
@@ -3124,7 +3261,7 @@ async def chat_with_voice_assistant():
     print("  🎤 [Always listening — just speak naturally, or type anything]")
     print("  🌐 [Example: 'search for AI news', 'open youtube', 'play despacito', 'search on google for weather']")
 
-    welcome_text = "System Online. Ready for commands."
+    welcome_text = "System Online. Welcome back sir."
     await speak_handler(welcome_text, current_voice)
 
     # ── Track state ──
