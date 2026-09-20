@@ -2268,8 +2268,8 @@ class NaturalVoiceListener:
         max_frames = int(self.MAX_RECORD_SECONDS * self.sample_rate / self.chunk_size)
         
         # Energy thresholds (calibrated for 16-bit audio)
-        speech_threshold = 500    # RMS above this = speech
-        silence_threshold = 300   # RMS below this = silence
+        speech_threshold = 450    # RMS above this = speech (slightly more sensitive)
+        silence_threshold = 250   # RMS below this = silence
         
         # Calibration phase
         print("  🔇 [Calibrating ambient noise...]", end="", flush=True)
@@ -2290,21 +2290,27 @@ class NaturalVoiceListener:
             if noise_samples:
                 ambient_rms = np.median(noise_samples)
                 # Set threshold: 3x ambient noise floor
-                speech_threshold = max(500, ambient_rms * 3.0)
-                silence_threshold = max(300, ambient_rms * 1.5)
+                speech_threshold = max(450, ambient_rms * 2.5)
+                silence_threshold = max(250, ambient_rms * 1.3)
             
             print(f" done (threshold={speech_threshold:.0f})")
             print("  🎤 [Listening... speak naturally]")
             print("      (I'll wait until you finish before responding)")
             
             frame_count = 0
+            meter_until = int(8 * self.sample_rate / self.chunk_size)  # show live level meter ~8s
             while frame_count < max_frames:
-                frame, _ = stream.read(self.chunk_size)
+                try:
+                    frame, _ = stream.read(self.chunk_size)
+                except Exception as e:
+                    print(f"\n  ⚠ [Mic read error: {e}] — retrying...", flush=True)
+                    time.sleep(0.2)
+                    return bytes(audio_buffer) if is_speaking else bytearray()
                 audio_buffer.extend(frame.tobytes())
-                
+
                 # Calculate RMS energy
                 rms = np.sqrt(np.mean(frame.astype(np.float32)**2))
-                
+
                 if rms >= speech_threshold:
                     # Speech detected
                     silence_counter = 0
@@ -2321,16 +2327,19 @@ class NaturalVoiceListener:
                             # Natural speech pause detected — return the buffer
                             return bytes(audio_buffer)
                     else:
-                        # Not speaking yet — keep listening
-                        pass
-                
+                        # Not speaking yet — show a LIVE level meter so the user
+                        # can confirm the microphone is actually hearing them.
+                        if frame_count % 20 == 0 and frame_count < meter_until:
+                            meter = int(min(40, rms / 12))
+                            print(f"\r  🎚 [{'-' * meter:<40}] ", end="", flush=True)
+
                 frame_count += 1
-                
+
                 # Progress indicator every 5 seconds
                 if frame_count % int(5 * self.sample_rate / self.chunk_size) == 0:
                     if is_speaking:
                         print(".", end="", flush=True)
-            
+
             # Max recording time reached
             if is_speaking:
                 print(" [max time]")
@@ -3165,19 +3174,30 @@ async def speak_handler(text, voice_key):
 
 def _listen_for_bargein(stop_event, tts_done, sample_rate=16000):
     """
-    Watch the microphone while Jarvis talks. If the user starts speaking
-    (above an ambient-calibrated threshold), stop the TTS immediately and
-    capture the user's new request until a natural pause.
+    Watch the microphone while Jarvis talks and detect a genuine user
+    interrupt WITHOUT reacting to Jarvis's own voice echoing out of the
+    speakers.
+
+    Strategy (echo-safe):
+      * Maintain a rolling audio floor calibrated from the live signal.
+      * Ignore continuous loud audio (Jarvis's own echo has no quiet gaps).
+      * Only honour a barge-in that starts AFTER a clear "quiet pocket"
+        followed by a sustained louder onset = a new voice joining in.
 
     Returns the interrupted request text, or None if Jarvis finished
-    speaking without an interruption.
+    speaking without a genuine interruption. Crucially, it NEVER returns
+    Jarvis's own echoed speech as if it were a user command, so the loop
+    can't accidentally talk to itself.
     """
-    chunk_size = 480  # 30ms frames at 16kHz
+    def _rms(frame):
+        return float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
 
-    speech_threshold = 700
-    silence_threshold = 350
-    noise_samples = []
-    calib_frames = int(0.4 * sample_rate / chunk_size)
+    chunk_size = 480  # 30ms frames at 16kHz
+    frames_per_second = sample_rate / chunk_size
+
+    floor = 300.0
+    calib_frames = int(0.5 * frames_per_second)
+    calib = []
 
     with sd.InputStream(
         samplerate=sample_rate,
@@ -3185,59 +3205,79 @@ def _listen_for_bargein(stop_event, tts_done, sample_rate=16000):
         dtype="int16",
         blocksize=chunk_size,
     ) as stream:
-        # Calibrate ambient floor while the TTS audio begins
+        # 1) Calibrate the noise floor during the TTS warm-up.
         for _ in range(calib_frames):
             frame, _ = stream.read(chunk_size)
-            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-            noise_samples.append(rms)
-        if noise_samples:
-            ambient = float(np.median(noise_samples))
-            speech_threshold = max(700, ambient * 4.0)
-            silence_threshold = max(350, ambient * 1.8)
+            calib.append(_rms(frame))
+        if calib:
+            floor = float(np.median(calib))
+        floor = max(150.0, floor)
 
-        # Grace period: let TTS audio settle before arming barge-in detection,
-        # so Jarvis's own opening audio doesn't trigger a false interrupt.
-        grace_frames = int(0.45 * sample_rate / chunk_size)
+        # 2) Grace period: let TTS opening audio settle before arming.
+        grace_frames = int(0.5 * frames_per_second)
         for _ in range(grace_frames):
-            stream.read(chunk_size)
+            frame, _ = stream.read(chunk_size)
+            r = _rms(frame)
+            if r < floor * 1.6:
+                floor = floor * 0.9 + r * 0.1  # keep floor fresh
 
-        frames_for_silence = int(0.9 * sample_rate / chunk_size)
+        quiet_thresh = max(floor * 1.6, floor + 200.0)   # clearly quieter = pause
+        loud_thresh = max(900.0, floor * 5.0)            # clearly louder = new voice
+        quiet_pocket_frames = max(4, int(0.12 * frames_per_second))  # >=120ms quiet gap
+        onset_frames = 3                                  # sustained loud to confirm
+        capture_silence_frames = int(0.8 * frames_per_second)
+
+        tail = []              # recent ~0.35s ring buffer (context for STT)
+        tail_max = int(0.35 * frames_per_second)
+        pre_quiet = 0
+        onset = 0
         is_barging = False
-        speech_counter = 0
-        silence_counter = 0
         buffer = bytearray()
+        silence_counter = 0
 
         while not tts_done.is_set():
             frame, _ = stream.read(chunk_size)
-            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+            r = _rms(frame)
 
-            if rms >= speech_threshold:
-                if is_barging:
-                    buffer.extend(frame.tobytes())
-                    silence_counter = 0
+            if is_barging:
+                buffer.extend(frame.tobytes())
+                if r < quiet_thresh:
+                    silence_counter += 1
                 else:
-                    speech_counter += 1
-                    if speech_counter >= 2:
-                        # User started talking over Jarvis -> interrupt now
+                    silence_counter = 0
+                if len(buffer) >= 6 * sample_rate * 2:   # ~6s safety cap
+                    break
+                if silence_counter >= capture_silence_frames:
+                    break
+                continue
+
+            # Track a rolling tail of the recent signal (for STT context)
+            tail.append(frame.tobytes())
+            if len(tail) > tail_max:
+                tail.pop(0)
+
+            if r < quiet_thresh:
+                pre_quiet += 1
+                onset = 0
+                # slowly refresh the floor on quiet frames only
+                floor = floor * 0.9 + r * 0.1
+            else:
+                if pre_quiet >= quiet_pocket_frames and r >= loud_thresh:
+                    onset += 1
+                    if onset >= onset_frames:
+                        # Confirmed: quiet pocket then sustained louder voice.
                         is_barging = True
-                        stop_event.set()
+                        stop_event.set()          # Jarvis stops now
+                        buffer = bytearray(b"".join(tail))  # include leading context
                         buffer.extend(frame.tobytes())
                         silence_counter = 0
                         print("\n  🎤 [User interrupted — listening...]", flush=True)
-            else:
-                speech_counter = 0
-                if is_barging:
-                    buffer.extend(frame.tobytes())
-                    silence_counter += 1
-                    if silence_counter >= frames_for_silence:
-                        break
-
-            # Safety cap while barging (~6s of audio)
-            if is_barging and len(buffer) >= 6 * sample_rate * 2:
-                break
+                else:
+                    onset = 0  # continuous audio (likely Jarvis echo) — ignore
+                pre_quiet = 0
 
         if not is_barging:
-            return None  # Jarvis finished speaking, no interruption
+            return None  # Jarvis finished speaking, no genuine interruption
 
         audio = bytes(buffer)
         if len(audio) < 2000 or not SR_AVAILABLE:
@@ -3430,7 +3470,9 @@ async def chat_with_voice_assistant():
                 )
 
                 if spoken_text is None:
-                    # No speech detected — try text input as fallback
+                    # No speech detected — tell the user instead of silently looping
+                    print("\n  🤔 [No voice heard yet — keep talking or type your command.]")
+                    # Try text input as fallback
                     try:
                         print(f"\r  ⌨️  [Type your command]: ", end="", flush=True)
                         raw_input = await asyncio.wait_for(
