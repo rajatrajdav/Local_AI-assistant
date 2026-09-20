@@ -2231,7 +2231,7 @@ class NaturalVoiceListener:
     VAD_MODE = 1  
     
     # Silence threshold: how many seconds of quiet before we decide speech is done
-    SILENCE_DURATION_SECONDS = 1.5
+    SILENCE_DURATION_SECONDS = 0.9
     
     # Minimum speech duration to accept (avoids coughs/background noise)
     MIN_SPEECH_SECONDS = 0.5
@@ -2452,11 +2452,14 @@ print("All available voice engines loaded successfully!\n")
 # AUDIO PLAYBACK FUNCTIONS
 # ============================================================
 
-def play_piper_tts(text, engine_key):
+def play_piper_tts(text, engine_key, stop_event=None):
     """
     FIX #1 — Local Piper TTS with normalization pre-pass.
     Hindi text is cleaned before synthesis to prevent mispronunciation.
     English text receives light normalization.
+
+    If `stop_event` is provided, playback checks it before every chunk and
+    stops immediately when set (used for barge-in / user interruption).
     """
     if engine_key not in voice_engines:
         print(f"[Error] Voice engine '{engine_key}' not found.")
@@ -2482,6 +2485,10 @@ def play_piper_tts(text, engine_key):
             dtype="int16",
         ) as stream:
             for chunk in selected_voice.synthesize(text):
+                # Barge-in: stop speaking as soon as the user interrupts
+                if stop_event is not None and stop_event.is_set():
+                    print("\n  🛑 [Jarvis stopped — barge-in]")
+                    break
                 audio_data = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
                 stream.write(audio_data)
     except Exception as e:
@@ -3153,6 +3160,134 @@ async def speak_handler(text, voice_key):
 
 
 # ============================================================
+# BARGE-IN — User can interrupt while Jarvis is speaking
+# ============================================================
+
+def _listen_for_bargein(stop_event, tts_done, sample_rate=16000):
+    """
+    Watch the microphone while Jarvis talks. If the user starts speaking
+    (above an ambient-calibrated threshold), stop the TTS immediately and
+    capture the user's new request until a natural pause.
+
+    Returns the interrupted request text, or None if Jarvis finished
+    speaking without an interruption.
+    """
+    chunk_size = 480  # 30ms frames at 16kHz
+
+    speech_threshold = 700
+    silence_threshold = 350
+    noise_samples = []
+    calib_frames = int(0.4 * sample_rate / chunk_size)
+
+    with sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="int16",
+        blocksize=chunk_size,
+    ) as stream:
+        # Calibrate ambient floor while the TTS audio begins
+        for _ in range(calib_frames):
+            frame, _ = stream.read(chunk_size)
+            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+            noise_samples.append(rms)
+        if noise_samples:
+            ambient = float(np.median(noise_samples))
+            speech_threshold = max(700, ambient * 4.0)
+            silence_threshold = max(350, ambient * 1.8)
+
+        # Grace period: let TTS audio settle before arming barge-in detection,
+        # so Jarvis's own opening audio doesn't trigger a false interrupt.
+        grace_frames = int(0.45 * sample_rate / chunk_size)
+        for _ in range(grace_frames):
+            stream.read(chunk_size)
+
+        frames_for_silence = int(0.9 * sample_rate / chunk_size)
+        is_barging = False
+        speech_counter = 0
+        silence_counter = 0
+        buffer = bytearray()
+
+        while not tts_done.is_set():
+            frame, _ = stream.read(chunk_size)
+            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+
+            if rms >= speech_threshold:
+                if is_barging:
+                    buffer.extend(frame.tobytes())
+                    silence_counter = 0
+                else:
+                    speech_counter += 1
+                    if speech_counter >= 2:
+                        # User started talking over Jarvis -> interrupt now
+                        is_barging = True
+                        stop_event.set()
+                        buffer.extend(frame.tobytes())
+                        silence_counter = 0
+                        print("\n  🎤 [User interrupted — listening...]", flush=True)
+            else:
+                speech_counter = 0
+                if is_barging:
+                    buffer.extend(frame.tobytes())
+                    silence_counter += 1
+                    if silence_counter >= frames_for_silence:
+                        break
+
+            # Safety cap while barging (~6s of audio)
+            if is_barging and len(buffer) >= 6 * sample_rate * 2:
+                break
+
+        if not is_barging:
+            return None  # Jarvis finished speaking, no interruption
+
+        audio = bytes(buffer)
+        if len(audio) < 2000 or not SR_AVAILABLE:
+            return None
+        return NaturalVoiceListener().transcribe_audio(audio)
+
+
+async def speak_with_bargein(text, voice_key, bargein_enabled=True):
+    """
+    Speak the response while simultaneously listening for the user to
+    interrupt. When the user starts talking, Jarvis stops mid-sentence and
+    listens for the new request.
+
+    Returns the interrupted command text, or None if the response completed
+    without an interruption.
+    """
+    if voice_key not in VOICES:
+        print(f"[Error] Unknown voice key: {voice_key}")
+        return None
+
+    stop_event = threading.Event()
+    tts_done = threading.Event()
+
+    def _tts_worker():
+        try:
+            play_piper_tts(text, voice_key, stop_event=stop_event)
+        finally:
+            tts_done.set()
+
+    if not bargein_enabled:
+        await asyncio.to_thread(_tts_worker)
+        return None
+
+    tts_task = asyncio.create_task(asyncio.to_thread(_tts_worker))
+    try:
+        try:
+            interrupted = await asyncio.to_thread(_listen_for_bargein, stop_event, tts_done)
+        except Exception as e:
+            print(f"  ⚠ [Barge-in error]: {e}")
+            interrupted = None
+    finally:
+        stop_event.set()
+        try:
+            await tts_task
+        except Exception:
+            pass
+    return interrupted
+
+
+# ============================================================
 # MAIN CHAT LOOP
 # ============================================================
 
@@ -3267,6 +3402,7 @@ async def chat_with_voice_assistant():
     # ── Track state ──
     wake_mode = False
     pending_voice_response = False
+    interrupt_command = None  # set when a response is barge-in interrupted
 
     while True:
         try:
@@ -3274,38 +3410,47 @@ async def chat_with_voice_assistant():
             clean_input = None
 
             # ── Voice mode: listen for speech naturally ──
-            if not pending_voice_response:
+            if interrupt_command:
+                # A previous response was interrupted — process the new request
+                # captured during barge-in directly (no need to listen again).
+                clean_input = interrupt_command
+                interrupt_command = None
+                print(f"\n  🎤 [Heard while speaking]: {clean_input}")
+                print(f"  📝 [You said]: {clean_input}")
+                pending_voice_response = False
+            elif not pending_voice_response:
                 print(f"\r  🎤 [Listening... say a command or type]", end="", flush=True)
                 _ui_update(listening=True, status_text="LISTENING", particle_mode="listening")
             else:
                 pending_voice_response = False
 
-            spoken_text, spoken_lang = await asyncio.to_thread(
-                listen_with_visualizer_natural, timeout=120
-            )
+            if clean_input is None:
+                spoken_text, _spoken_lang = await asyncio.to_thread(
+                    listen_with_visualizer_natural, timeout=120
+                )
 
-            if spoken_text is None:
-                # No speech detected — try text input as fallback
-                try:
-                    print(f"\r  ⌨️  [Type your command]: ", end="", flush=True)
-                    raw_input = await asyncio.wait_for(
-                        asyncio.to_thread(input, ""),
-                        timeout=5.0
-                    )
-                    if raw_input and raw_input.strip():
-                        user_input = raw_input.strip()
-                        clean_input = user_input
-                        print()
-                    else:
+                if spoken_text is None:
+                    # No speech detected — try text input as fallback
+                    try:
+                        print(f"\r  ⌨️  [Type your command]: ", end="", flush=True)
+                        raw_input = await asyncio.wait_for(
+                            asyncio.to_thread(input, ""),
+                            timeout=5.0
+                        )
+                        if raw_input and raw_input.strip():
+                            user_input = raw_input.strip()
+                            clean_input = user_input
+                            print()
+                        else:
+                            continue
+                    except asyncio.TimeoutError:
                         continue
-                except asyncio.TimeoutError:
-                    continue
-                except EOFError:
-                    break
-            else:
-                user_input = spoken_text
-                clean_input = spoken_text
-                print(f"\n  📝 [You said]: {clean_input}")
+                    except EOFError:
+                        break
+                else:
+                    user_input = spoken_text
+                    clean_input = spoken_text
+                    print(f"\n  📝 [You said]: {clean_input}")
 
             # ── Process the command ──
             if not clean_input:
@@ -3406,20 +3551,24 @@ async def chat_with_voice_assistant():
             conversation_history.append({"role": "user", "content": clean_input})
             conversation_history.append({"role": "assistant", "content": ai_response})
 
-            # ── Speaking state ──
+            # ── Speaking state (barge-in enabled) ──
             _ui_update(processing=False, speaking=True, listening=False,
                       status_text="SPEAKING", particle_mode="speaking",
                       last_response=ai_response[:100])
             _ui_message(f"Jarvis: {ai_response[:80]}...")
 
-            await speak_handler(ai_response, current_voice)
+            interrupted = await speak_with_bargein(ai_response, current_voice)
 
-            # ── Drain microphone buffer (wait for TTS echoes to fade) ──
-            print(f"\r  ⏳ [Waiting 2s for audio to settle...]", end="", flush=True)
+            # ── Brief cooldown for audio to settle (shortened for speed) ──
+            print(f"\r  ⏳ [Audio settling...]", end="", flush=True)
             _ui_update(speaking=False, processing=False, listening=False,
                       status_text="COOLDOWN", particle_mode="idle")
-            await asyncio.sleep(2.0)
-            
+            await asyncio.sleep(0.4)
+
+            # If the user interrupted, feed the new request into the next loop pass
+            if interrupted:
+                interrupt_command = interrupted
+
             # ── Back to listening ──
             _ui_update(listening=True, status_text="ALWAYS LISTENING", particle_mode="listening")
             wake_mode = False
