@@ -3473,7 +3473,7 @@ async def chat_with_voice_assistant():
                 print(f"\r  🎤 [Listening... say a command or type]", end="", flush=True)
                 _ui_update(listening=True, status_text="LISTENING", particle_mode="listening")
             else:
-                pending_voice_response = Fals
+                pending_voice_response = False
 
             if clean_input is None:
                 spoken_text, _spoken_lang = await asyncio.to_thread(
