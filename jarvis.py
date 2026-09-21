@@ -2144,6 +2144,17 @@ def execute_function(name, arguments):
             if "application_name" in parsed_args and "app_name" not in parsed_args:
                 parsed_args["app_name"] = parsed_args.pop("application_name")
 
+        # FIX: Reasoning models often emit the slide list under "slides" instead
+        # of the schema key "slides_content". Map the alias so
+        # create_presentation() no longer fails with
+        # "got an unexpected keyword argument 'slides'".
+        if name == "create_presentation":
+            if "slides" in parsed_args and "slides_content" not in parsed_args:
+                parsed_args["slides_content"] = parsed_args.pop("slides")
+            # If the model sent a single slide dict instead of a list, wrap it.
+            if isinstance(parsed_args.get("slides_content"), dict):
+                parsed_args["slides_content"] = [parsed_args["slides_content"]]
+
         result = func(**parsed_args)
         return f"Success: {result}"
     except Exception as e:
@@ -3462,7 +3473,7 @@ async def chat_with_voice_assistant():
                 print(f"\r  🎤 [Listening... say a command or type]", end="", flush=True)
                 _ui_update(listening=True, status_text="LISTENING", particle_mode="listening")
             else:
-                pending_voice_response = False
+                pending_voice_response = Fals
 
             if clean_input is None:
                 spoken_text, _spoken_lang = await asyncio.to_thread(

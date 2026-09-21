@@ -159,6 +159,123 @@ import pyperclip
 import speech_recognition as sr
 
 # ================================================================
+# AUDIO I/O — sounddevice based. NEVER uses PyAudio.
+# Used by /api/listen (mic) and /api/speak (Piper TTS playback).
+# ================================================================
+try:
+    import numpy as np
+    import sounddevice as sd
+    HAS_SOUNDDEVICE = True
+except Exception as e:
+    np = None
+    sd = None
+    HAS_SOUNDDEVICE = False
+    print(f"⚠ sounddevice not available: {e}")
+
+
+def play_sounddevice_tts(text, voice_key):
+    """Play Piper TTS through the speakers using sounddevice (no PyAudio).
+    Uses api_server's already-loaded Piper voice engines so /api/speak is
+    instant and audible — no heavy jarvis.py import needed."""
+    if not HAS_SOUNDDEVICE or voice_key not in voice_engines:
+        return False, f"Piper TTS not available for voice '{voice_key}'"
+    try:
+        selected = voice_engines[voice_key]
+        with sd.OutputStream(
+            samplerate=selected.config.sample_rate,
+            channels=1,
+            dtype="int16",
+        ) as stream:
+            for chunk in selected.synthesize(text):
+                audio_data = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
+                stream.write(audio_data)
+        return True, "done"
+    except Exception as e:
+        return False, str(e)
+
+
+class ApiNaturalListener:
+    """Natural voice-activity listener on sounddevice (NO PyAudio).
+    Waits for a real pause in speech before returning — mirrors
+    jarvis.py's NaturalVoiceListener for /api/listen."""
+
+    SILENCE_DURATION_SECONDS = 0.9
+    MIN_SPEECH_SECONDS = 0.5
+    MAX_RECORD_SECONDS = 60
+    CHUNK = 480  # 30ms frames at 16kHz
+
+    def __init__(self, sample_rate=16000):
+        self.sample_rate = sample_rate
+        self.channels = 1
+        self.sample_width = 2
+        self.chunk_size = self.CHUNK
+
+    def record_until_silence(self):
+        if not HAS_SOUNDDEVICE:
+            return bytearray()
+        fs_silence = int(self.SILENCE_DURATION_SECONDS * self.sample_rate / self.chunk_size)
+        max_frames = int(self.MAX_RECORD_SECONDS * self.sample_rate / self.chunk_size)
+        audio_buffer = bytearray()
+        is_speaking = False
+        silence_counter = 0
+        speech_counter = 0
+        speech_threshold = 450
+
+        with sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype="int16",
+            blocksize=self.chunk_size,
+        ) as stream:
+            # Calibration phase
+            noise = []
+            cal_frames = int(0.5 * self.sample_rate / self.chunk_size)
+            for _ in range(cal_frames):
+                frame, _ = stream.read(self.chunk_size)
+                rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+                noise.append(rms)
+            if noise:
+                ambient = float(np.median(noise))
+                speech_threshold = max(450, ambient * 2.5)
+
+            frame_count = 0
+            while frame_count < max_frames:
+                try:
+                    frame, _ = stream.read(self.chunk_size)
+                except Exception:
+                    return bytes(audio_buffer) if is_speaking else bytearray()
+                audio_buffer.extend(frame.tobytes())
+                rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+                if rms >= speech_threshold:
+                    silence_counter = 0
+                    speech_counter += 1
+                    if not is_speaking and speech_counter >= 2:
+                        is_speaking = True
+                elif is_speaking:
+                    silence_counter += 1
+                    if silence_counter >= fs_silence:
+                        keep = max(0, int(len(audio_buffer) * 0.85))
+                        return bytes(audio_buffer[:keep])
+                else:
+                    speech_counter = 0
+                frame_count += 1
+            return bytes(audio_buffer) if is_speaking else bytearray()
+
+    def transcribe(self, audio_bytes):
+        if not audio_bytes or len(audio_bytes) < self.chunk_size * 2:
+            return None
+        try:
+            audio_data = sr.AudioData(audio_bytes, self.sample_rate, self.sample_width)
+        except Exception:
+            return None
+        rec = sr.Recognizer()
+        try:
+            text = rec.recognize_google(audio_data, language="en-IN,hi-IN")
+            return text.strip() or None
+        except Exception:
+            return None
+
+# ================================================================
 # IMPORT BACKEND TOOLS
 # ================================================================
 def import_backend_tools():
@@ -373,6 +490,17 @@ def execute_tool_endpoint():
                     parsed_args[key] = value
             else:
                 parsed_args[key] = value
+
+        # FIX: Reasoning models often emit the slide list under "slides" instead
+        # of the schema key "slides_content". Map the alias so
+        # create_presentation() no longer fails with
+        # "got an unexpected keyword argument 'slides'".
+        if data["tool"] == "create_presentation":
+            if "slides" in parsed_args and "slides_content" not in parsed_args:
+                parsed_args["slides_content"] = parsed_args.pop("slides")
+            # If a single slide dict was sent instead of a list, wrap it.
+            if isinstance(parsed_args.get("slides_content"), dict):
+                parsed_args["slides_content"] = [parsed_args["slides_content"]]
 
         result = func(**parsed_args)
         return jsonify({
