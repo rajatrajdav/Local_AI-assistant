@@ -45,10 +45,29 @@ os.chdir(BASE_DIR)  # stable paths for voices/ and generated_files/
 
 import tkinter as tk
 
+# ---------------------------------------------------------------
+# CustomTkinter — required for the main UI. If missing, try to
+# auto-install it so the app never dies with a cryptic AttributeError.
+# ---------------------------------------------------------------
 try:
     import customtkinter as ctk
-except Exception:
+    CTK_ERROR = None
+except Exception as _ce:
+    CTK_ERROR = _ce
     ctk = None
+    try:
+        import subprocess as _sp
+        _sp.check_call([sys.executable, "-m", "pip", "install",
+                        "customtkinter", "--quiet"])
+        import customtkinter as ctk
+        CTK_ERROR = None
+    except Exception:
+        ctk = None
+if ctk is None:
+    print("FATAL: CustomTkinter could not be imported.\n"
+          "       Run:  pip install customtkinter\n"
+          f"       Reason: {CTK_ERROR}")
+    sys.exit(2)
 
 # =================================================================
 # Colour palette — Iron-Man / HUD dark theme
@@ -80,21 +99,58 @@ STATUS_STYLE = {
 }
 
 # =================================================================
-# Engine import (jarvis.py)
+# Engine import (jarvis.py) — LAZY. The slow import runs in a
+# background thread while the video splash screen is animating.
 # =================================================================
-try:
-    import jarvis as _engine
-    from jarvis import (
-        VOICES, PERSONALITIES, FUNCTION_MAP, OUTPUT_DIR,
-        process_user_input, execute_function, get_system_info,
-        detect_target_personality, detect_lang, get_personality,
-    )
-    ENGINE_OK = True
-except Exception as _exc:
-    _engine = None
-    VOICES = {"en_male": {"name": "Jarvis (English)"}}
-    ENGINE_OK = False
-    ENGINE_ERR = str(_exc)
+_engine = None
+ENGINE_OK = False
+ENGINE_ERR = "Engine not loaded yet."
+VOICES = {
+    "en_male":  {"name": "Jarvis (English)"},
+    "hi_male":  {"name": "Jarvis (Hindi)"},
+    "en_female": {"name": "Simmi (English)"},
+}
+PERSONALITIES = {}
+FUNCTION_MAP = {}
+OUTPUT_DIR = os.path.join(BASE_DIR, "generated_files")
+process_user_input = None
+execute_function = None
+get_system_info = None
+detect_target_personality = None
+detect_lang = None
+get_personality = None
+_sr = None
+_SndMic = None
+VOICE_INPUT = False
+
+
+def _load_engine():
+    """Import the heavy jarvis.py engine. Call from a background thread."""
+    global _engine, ENGINE_OK, ENGINE_ERR, VOICES, PERSONALITIES
+    global FUNCTION_MAP, OUTPUT_DIR, process_user_input, execute_function
+    global get_system_info, detect_target_personality, detect_lang
+    global get_personality, _sr, _SndMic, VOICE_INPUT
+    try:
+        import jarvis as _engine
+        from jarvis import (
+            VOICES, PERSONALITIES, FUNCTION_MAP, OUTPUT_DIR,
+            process_user_input, execute_function, get_system_info,
+            detect_target_personality, detect_lang, get_personality,
+        )
+        ENGINE_OK = True
+    except Exception as _exc:
+        ENGINE_OK = False
+        ENGINE_ERR = str(_exc)
+    try:
+        import speech_recognition as _sr
+        _SndMic = getattr(_engine, "SoundDeviceMicrophone", None)
+        VOICE_INPUT = bool(_SndMic)
+    except Exception:
+        _sr = None
+        _SndMic = None
+        VOICE_INPUT = False
+    return ENGINE_OK
+
 
 def _speak_async(text, voice):
     """TTS bridge: speak_handler is async; run it in a temporary loop."""
@@ -104,20 +160,11 @@ def _speak_async(text, voice):
         except Exception:
             pass
 
-# Optional voice input (SpeechRecognition + sounddevice mic)
-try:
-    import speech_recognition as _sr
-    _SndMic = _engine.SoundDeviceMicrophone if _engine else None
-    VOICE_INPUT = bool(_SndMic)
-except Exception:
-    _sr = None
-    _SndMic = None
-    VOICE_INPUT = False
 
 PERSONA_LABEL = {
-    "en_male": "JARVIS — ENGLISH",
-    "hi_male": "JARVIS — HINDI",
-    "en_female": "SIMMI — ENGLISH",
+    "en_male": "JARVIS \u2014 ENGLISH",
+    "hi_male": "JARVIS \u2014 HINDI",
+    "en_female": "SIMMI \u2014 ENGLISH",
 }
 # =================================================================
 # Main application window
