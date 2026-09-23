@@ -967,16 +967,195 @@ class JarvisGUI(ctk.CTk):
             pass
         self.destroy()
 # =============================================================
+# Loading video splash — pure Tkinter, plays the video in a loop
+# =============================================================
+VIDEO_CANDIDATES = [
+    os.path.join(BASE_DIR, "jarvis", "Loading.mp4"),
+    os.path.join(BASE_DIR, "Loading.mp4"),
+    os.path.join(BASE_DIR, "jarvis", "Jarvis.mp4"),
+]
+
+
+def _find_video():
+    for p in VIDEO_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    for folder in (os.path.join(BASE_DIR, "jarvis"), BASE_DIR):
+        try:
+            for f in sorted(os.listdir(folder)):
+                if f.lower().endswith((".mp4", ".avi", ".mov", ".webm",
+                                       ".mkv")):
+                    return os.path.join(folder, f)
+        except Exception:
+            pass
+    return None
+
+
+def _extract_frames(video_path, target_w=560, max_frames=220):
+    """Decode the video into a list of PIL frames (sampled + downscaled)."""
+    try:
+        import imageio.v2 as _iio
+        from PIL import Image
+        reader = _iio.get_reader(video_path)
+        count = 0
+        try:
+            count = min(int(reader.count_frames()), max_frames)
+        except Exception:
+            count = max_frames
+        step = max(1, count // 180)  # keep the loop snappy (~180 frames)
+        frames = []
+        for i in range(0, count, step):
+            try:
+                arr = reader.get_data(i)
+            except Exception:
+                break
+            img = Image.fromarray(arr).convert("RGB")
+            w, h = img.size
+            if w > target_w:
+                img = img.resize((target_w, int(h * target_w / w)),
+                                 Image.BILINEAR)
+            frames.append(img)
+        try:
+            reader.close()
+        except Exception:
+            pass
+        return frames
+    except Exception:
+        return []
+
+
+def _fallback_frames():
+    """If the video can't be decoded, show a pulsing reactor instead."""
+    try:
+        from PIL import Image, ImageDraw
+        frames = []
+        for t in range(24):
+            img = Image.new("RGB", (560, 315), (11, 14, 20))
+            d = ImageDraw.Draw(img)
+            cx, cy = 280, 150
+            r = 40 + int(10 * abs(((t % 24) - 12) / 12))
+            d.ellipse(cx - r, cy - r, cx + r, cy + r,
+                      outline=(0, 229, 255), width=3)
+            d.ellipse(cx - 16, cy - 16, cx + 16, cy + 16,
+                      outline=(0, 229, 255), width=2)
+            d.ellipse(cx - 4, cy - 4, cx + 4, cy + 4, fill=(0, 229, 255))
+            frames.append(img)
+        return frames
+    except Exception:
+        return []
+# __SPLASH_MORE__
+
+class SplashScreen:
+    """Borderless always-on-top window that loops the loading video."""
+
+    MIN_DISPLAY = 2.5   # seconds the video must be visible at minimum
+    FRAME_GAP = 0.041   # ~24 fps
+
+    def __init__(self, frames):
+        self.frames = frames or _fallback_frames()
+        self.root = tk.Tk()
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        try:
+            self.root.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+        w = self.frames[0].width if self.frames else 560
+        h = self.frames[0].height if self.frames else 315
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x, y = (sw - w) // 2, max(0, (sh - h) // 2 - 20)
+        self.root.geometry("%dx%d+%d+%d" % (w, h + 34, x, y))
+        self.root.configure(bg="black")
+
+        self.canvas = tk.Canvas(self.root, width=w, height=h, bg="black",
+                                highlightthickness=0, bd=0)
+        self.canvas.pack()
+        self.msg = tk.Label(self.root, text="INITIALIZING J.A.R.V.I.S \u2026",
+                            fg="#00E5FF", bg="black",
+                            font=("Segoe UI", 10, "bold"))
+        self.msg.pack(side="bottom", pady=2)
+
+        self._idx = 0
+        self._photo = None
+        self._t0 = time.time()
+        self._status_text = "INITIALIZING J.A.R.V.I.S \u2026"
+
+    def set_status(self, text):
+        self._status_text = text
+
+    def pump(self):
+        """Draw the next video frame + update the window (main thread)."""
+        try:
+            from PIL import ImageTk
+            if self.frames:
+                img = self.frames[self._idx % len(self.frames)]
+                self._idx += 1
+                self._photo = ImageTk.PhotoImage(img)
+                self.canvas.create_image(
+                    self.canvas.winfo_width() / 2,
+                    self.canvas.winfo_height() / 2,
+                    image=self._photo)
+            self.msg.configure(text=self._status_text)
+            self.root.update()
+        except tk.TclError:
+            pass
+        except Exception:
+            pass
+
+    def ready(self):
+        return (time.time() - self._t0) >= self.MIN_DISPLAY
+
+    def close(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+
+# =============================================================
 # Entry point
 # =============================================================
 def main():
-    if ctk is None:
-        print("CustomTkinter is not installed.\nInstall with: pip install customtkinter")
-        return
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
+
+    # --- discover + decode the loading video ----------------------
+    video = _find_video()
+    if video:
+        print("Loading splash:", video)
+        frames = _extract_frames(video)
+    else:
+        frames = _fallback_frames()
+
+    splash = SplashScreen(frames)
+
+    # --- load the heavy jarvis engine in the background -----------
+    result = {"done": False, "ok": False}
+
+    def _worker():
+        try:
+            result["ok"] = _load_engine()
+        finally:
+            result["done"] = True
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    # --- pump the video loop until the engine is ready ------------
+    timeout = time.time() + 120
+    while not result["done"] or not splash.ready():
+        if time.time() > timeout:
+            break
+        splash.set_status("INITIALIZING J.A.R.V.I.S \u2026"
+                          if not result["done"]
+                          else "SYSTEM ONLINE \u2014 welcome back, sir.")
+        splash.pump()
+        time.sleep(SplashScreen.FRAME_GAP)
+    splash.close()
+
     if not ENGINE_OK:
-        print("WARNING: Jarvis engine could not be loaded. GUI runs in demo mode.")
+        print("WARNING: Jarvis engine could not be loaded. "
+              "GUI runs in demo mode.\n%s" % ENGINE_ERR)
     app = JarvisGUI()
     app.mainloop()
 
