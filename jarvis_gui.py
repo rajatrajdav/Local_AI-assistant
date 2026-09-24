@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-J.A.R.V.I.S. — Professional Desktop GUI
+J.A.R.V.I.S. — Cinematic HUD Desktop Interface
 =================================================================
-A futuristic, HUD-style desktop interface for the Jarvis & Simmi
-AI voice assistant, built with CustomTkinter on top of the
-existing jarvis.py engine (LLM tool-calling, dual personalities,
-local Piper TTS, system control).
+Recreation of the classic Iron-Man style JARVIS console:
 
-Pages
------
-  • Chat          — text chat with Jarvis / Simmi, quick commands
-  • System Monitor— live CPU / RAM / Disk / Battery gauges
-  • Abilities     — showcase of every tool the assistant can run
-  • About         — project showcase / tech-stack panel
+    ┌──────────────────────────────────────────────────────────┐
+    │ J.A.R.V.I.S   time/date        [voice] [status] [clock]  │
+    ├──────────┬──────────────────────────────┬────────────────┤
+    │ SYSTEM   │        ARC REACTOR            │ DIAGNOSTICS    │
+    │ readout  │   + waveform + command bar   │ CPU/RAM/DISK/  │
+    │ column   │                              │  BATTERY/GPU   │
+    ├──────────┴──────────────────────────────┴────────────────┤
+    │ scrolling conversation / event log (bottom strip)        │
+    └──────────────────────────────────────────────────────────┘
 
-Architecture
-------------
-The engine (jarvis.py) does all network + audio work on a
-dedicated background thread so the interface never freezes.
-Thread→UI messages are marshalled through a thread-safe queue
-which the UI polls a few times per second with `after(...)`.
+Behaviour mirrors jarvis.py's console loop (chat_with_voice_assistant):
+  wake-word strip → exit words → detect_target_personality /
+  detect_lang voice routing → process_user_input → LLM voice_preference
+  switch → execute_function(tool_call) → history append → speak via
+  play_piper_tts, plus the "System online. Welcome back, sir." boot
+  greeting spoken by the default voice as soon as the HUD appears.
 
 Run with:
     python jarvis_gui.py
@@ -30,6 +30,7 @@ import os
 import sys
 import time
 import json
+import math
 import queue
 import asyncio
 import threading
@@ -46,8 +47,7 @@ os.chdir(BASE_DIR)  # stable paths for voices/ and generated_files/
 import tkinter as tk
 
 # ---------------------------------------------------------------
-# CustomTkinter — required for the main UI. If missing, try to
-# auto-install it so the app never dies with a cryptic AttributeError.
+# CustomTkinter — required. Self-heal with pip if missing.
 # ---------------------------------------------------------------
 try:
     import customtkinter as ctk
@@ -70,33 +70,37 @@ if ctk is None:
     sys.exit(2)
 
 # =================================================================
-# Colour palette — Iron-Man / HUD dark theme
+# HUD palette — deep-space blue + arc cyan, like the reference still
 # =================================================================
-BG       = "#0B0E14"
-PANEL    = "#121722"
-PANEL_2  = "#1A2130"
-BORDER   = "#1E2A45"
-ACCENT   = "#00E5FF"   # cyber cyan
-ACCENT_2 = "#3B82F6"   # electric blue
-GOOD     = "#22C55E"   # online / success
-WARN     = "#F59E0B"   # processing / amber
-BAD      = "#EF4444"   # error / off
-TEXT     = "#EAF3FF"
-MUTED    = "#8FA3C4"
-SOFT     = "#5B6B8C"
+BG       = "#020610"   # near-black blue backdrop
+PANEL    = "#040B1C"
+PANEL_2  = "#071231"
+BORDER   = "#0E3E7E"
+GRIDLINE = "#0B2A5B"
+ACCENT   = "#00D8FF"
+ACCENT_2 = "#2E7BFF"
+GOOD     = "#22C55E"
+WARN     = "#F5A623"
+BAD      = "#FF5470"
+TEXT     = "#CFE9FF"
+MUTED    = "#7FA3D8"
+SOFT     = "#3C5176"
 
 FONT = "Segoe UI"
+MONO = "Consolas"
 
 STATUS_STYLE = {
-    "ONLINE":     {"color": GOOD,  "glyph": "\u25cf"},
-    "LISTENING":  {"color": GOOD,  "glyph": "\u25cf"},
-    "PROCESSING": {"color": WARN,  "glyph": "\u25d0"},
+    "ONLINE":     {"color": GOOD,   "glyph": "\u25cf"},
+    "LISTENING":  {"color": GOOD,   "glyph": "\u25cf"},
+    "PROCESSING": {"color": WARN,   "glyph": "\u25d0"},
     "SPEAKING":   {"color": ACCENT, "glyph": "\u25c9"},
-    "BUSY":       {"color": WARN,  "glyph": "\u25d0"},
-    "OFFLINE":    {"color": BAD,   "glyph": "\u25cb"},
-    "ERROR":      {"color": BAD,   "glyph": "\u2716"},
-    "IDLE":       {"color": SOFT,  "glyph": "\u25cb"},
+    "BUSY":       {"color": WARN,   "glyph": "\u25d0"},
+    "OFFLINE":    {"color": BAD,    "glyph": "\u25cb"},
+    "ERROR":      {"color": BAD,    "glyph": "\u2716"},
+    "IDLE":       {"color": SOFT,   "glyph": "\u25cb"},
 }
+
+EXIT_WORDS = {"exit", "quit", "bye", "goodbye", "shutdown", "stop"}
 
 # =================================================================
 # Engine import (jarvis.py) — LAZY. The slow import runs in a
@@ -119,6 +123,9 @@ get_system_info = None
 detect_target_personality = None
 detect_lang = None
 get_personality = None
+detect_wake_word = None
+strip_wake_word = None
+listen_natural_fn = None
 _sr = None
 _SndMic = None
 VOICE_INPUT = False
@@ -129,14 +136,17 @@ def _load_engine():
     global _engine, ENGINE_OK, ENGINE_ERR, VOICES, PERSONALITIES
     global FUNCTION_MAP, OUTPUT_DIR, process_user_input, execute_function
     global get_system_info, detect_target_personality, detect_lang
-    global get_personality, _sr, _SndMic, VOICE_INPUT
+    global get_personality, detect_wake_word, strip_wake_word
+    global listen_natural_fn, _sr, _SndMic, VOICE_INPUT
     try:
         import jarvis as _engine
         from jarvis import (
             VOICES, PERSONALITIES, FUNCTION_MAP, OUTPUT_DIR,
             process_user_input, execute_function, get_system_info,
             detect_target_personality, detect_lang, get_personality,
+            detect_wake_word, strip_wake_word,
         )
+        listen_natural_fn = getattr(_engine, "listen_natural", None)
         ENGINE_OK = True
     except Exception as _exc:
         ENGINE_OK = False
@@ -153,10 +163,21 @@ def _load_engine():
 
 
 def _speak_async(text, voice):
-    """TTS bridge: speak_handler is async; run it in a temporary loop."""
+    """TTS bridge: speak_handler is async; run it in a temporary loop.
+
+    Always runs even when called from a thread that already owns an event
+    loop (we create a fresh loop explicitly instead of asyncio.run).
+    """
     if ENGINE_OK and _engine is not None and text:
         try:
-            asyncio.run(_engine.speak_handler(text, voice))
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_engine.speak_handler(text, voice))
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -212,6 +233,18 @@ class JarvisGUI(ctk.CTk):
         self._poll_sys()
         if ENGINE_OK:
             self._append_system("J.A.R.V.I.S engine online. Ready for text or voice commands.")
+            boot_text = "System Online. Welcome back sir."
+            self.from_engine.put({
+                "_kind": "ai_msg", "text": boot_text,
+                "voice": self.current_voice, "tool": None,
+            })
+            self._greeted = True
+            threading.Thread(
+                target=_speak_async, args=(boot_text, self.current_voice),
+                daemon=True).start()
+            self._set_status("SPEAKING")
+        else:
+            self._greeted = False
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -249,17 +282,87 @@ class JarvisGUI(ctk.CTk):
                 self.sys_info = info
             time.sleep(2)
 
-    # -------------------------------------------------------------
-    # Process a single chat turn (engine thread)
+    # Mirrors chat_with_voice_assistant() in jarvis.py:
+    # wake-word strip -> exit words -> personality/lang voice routing
+    # -> process_user_input -> LLM voice switch -> execute_function
+    # -> history append -> speak via speak_handler.
     # -------------------------------------------------------------
     def _run_chat(self, job):
-        user_text = job["text"]
+        user_text = (job.get("text") or "").strip()
+        if not user_text:
+            self._busy = False
+            return
         self.from_engine.put({"_kind": "user_msg", "text": user_text})
         self.from_engine.put({"_kind": "status", "status": "PROCESSING"})
 
+        clean = user_text
+        # 1) Wake-word strip (jarvis.py detect/strip_wake_word)
+        try:
+            if detect_wake_word and detect_wake_word(clean):
+                stripped = strip_wake_word(clean).strip() if strip_wake_word else ""
+                if not stripped:
+                    reply = "Yes sir? How can I help you?"
+                    self.conversation.append({"role": "user", "content": clean})
+                    self.conversation.append({"role": "assistant", "content": reply})
+                    self.from_engine.put({
+                        "_kind": "ai_msg", "text": reply,
+                        "voice": self.current_voice, "tool": None,
+                    })
+                    if self.tts_enabled:
+                        self.from_engine.put({"_kind": "status", "status": "SPEAKING"})
+                        _speak_async(reply, self.current_voice)
+                    self.from_engine.put({"_kind": "status", "status": "ONLINE"})
+                    self._busy = False
+                    return
+                clean = stripped
+        except Exception:
+            pass
+
+        # 2) Exit words (jarvis.py: exit/quit/bye/goodbye/shutdown/stop)
+        if clean.lower() in EXIT_WORDS:
+            farewell = "Goodbye! Have a wonderful day!"
+            self.conversation.append({"role": "user", "content": clean})
+            self.conversation.append({"role": "assistant", "content": farewell})
+            self.from_engine.put({
+                "_kind": "ai_msg", "text": farewell,
+                "voice": self.current_voice, "tool": None,
+            })
+            self.from_engine.put({"_kind": "status", "status": "SPEAKING"})
+            _speak_async(farewell, self.current_voice)
+            self.from_engine.put({"_kind": "status", "status": "ONLINE"})
+            self._busy = False
+            return
+
+        # 3) Personality & language routing BEFORE the LLM call
+        try:
+            detected_personality = detect_target_personality(clean) if detect_target_personality else None
+            detected_lang = detect_lang(clean) if detect_lang else "en"
+        except Exception:
+            detected_personality, detected_lang = None, "en"
+
+        new_voice, switch_reason = None, None
+        if detected_personality == "jarvis":
+            new_voice = "hi_male" if detected_lang == "hi" else "en_male"
+            switch_reason = "User addressed Jarvis"
+        elif detected_personality == "simmi":
+            new_voice = "en_female"
+            switch_reason = "User addressed Simmi"
+        elif detected_lang == "hi" and self.current_voice != "hi_male":
+            new_voice = "hi_male"
+            switch_reason = "Hindi language detected"
+        if new_voice and new_voice in VOICES and new_voice != self.current_voice:
+            self.current_voice = new_voice
+            self.from_engine.put({"_kind": "voice_switch", "voice": new_voice})
+            if switch_reason:
+                self.from_engine.put({
+                    "_kind": "system",
+                    "text": "Voice switched to %s (%s)." % (
+                        VOICES[new_voice].get("name", new_voice), switch_reason),
+                })
+
         try:
             result = process_user_input(
-                user_text, self.conversation, self.current_voice)
+                clean, self.conversation, self.current_voice)
         except Exception as exc:
             result = {"response": f"I hit an error while processing that: {exc}"}
 
@@ -272,20 +375,28 @@ class JarvisGUI(ctk.CTk):
             voice_out = pref
             self.from_engine.put({"_kind": "voice_switch", "voice": pref})
 
+        # 5) Execute tool automatically, then build the final response
+        # exactly like jarvis.py (Done! + tool result appended)
         tool_line = None
+        tool_result = None
         if result.get("tool_call"):
             tc = result["tool_call"]
             name = tc.get("name")
             args = tc.get("arguments") or {}
             try:
-                res = execute_function(name, args)
-                tool_line = f"\u2699  {name.replace('_', ' ')} \u2192 {str(res)[:180]}"
-                if "Success" in str(res):
-                    out = f"{out} \u2705 {str(res).replace('Success: ', '')}"
+                tool_result = execute_function(name, args)
+                tool_line = f"\u2699  {name.replace('_', ' ')} \u2192 {str(tool_result)[:180]}"
             except Exception as exc:
+                tool_result = f"Error: {exc}"
                 tool_line = f"\u2716  {name} \u2192 {exc}"
 
-        self.conversation.append({"role": "user", "content": user_text})
+        if tool_result and "Permission denied" not in str(tool_result):
+            if "Success" in str(tool_result):
+                out = f"{out}. Done! {str(tool_result).replace('Success: ', '')}"
+            else:
+                out = f"{out}. {tool_result}"
+
+        self.conversation.append({"role": "user", "content": clean})
         self.conversation.append({"role": "assistant", "content": out})
         if len(self.conversation) > 60:
             self.conversation = self.conversation[-60:]
@@ -294,11 +405,14 @@ class JarvisGUI(ctk.CTk):
             "_kind": "ai_msg", "text": out, "voice": voice_out, "tool": tool_line,
         })
 
-        # Optional spoken reply (runs in this background thread)
+        # 6) Speak the reply via speak_handler (plain TTS; the barge-in
+        # mic-watch is a console-loop concern — in the GUI the user
+        # interrupts by typing or hitting the mic button)
         if self.tts_enabled:
             self.from_engine.put({"_kind": "status", "status": "SPEAKING"})
             _speak_async(out, voice_out)
             self.from_engine.put({"_kind": "status", "status": "ONLINE"})
+        self._busy = False
 
     # -------------------------------------------------------------
     # Optional voice capture (engine thread)
