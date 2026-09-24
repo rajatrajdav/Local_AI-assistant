@@ -1,0 +1,62 @@
+﻿   ok   view:conversation
+   ok   view:capabilities
+   ok   view:activity
+Γ£ô Groq API connected - Ultra-fast mode enabled!
+Γ£ô Cerebras Cloud (OpenAI-compat) connected ΓÇö Fallback LLM ready!
+   ok   view:deliverables
+   ok   view:diagnostics
+   ok   view:about
+   ok   event user
+   ok   event status
+   ok   event intent
+   ok   event tool start
+   ok   event tool done
+   ok   event ai
+   ok   event sysinfo
+   ok   event voice switch
+   ok   event notice
+   ok   event speech
+   ok   event speech end
+   ok   event error
+  Γ£ô Groq model resolved: openai/gpt-oss-120b
+  Γ£ô Cerebras model resolved: qwen-3.8-27b
+Γ£ô Google Gen AI SDK connected ΓÇö Key Rotation enabled (1 key(s))
+   ok   turn pipeline
+   ok   mute on
+   ok   mute off
+   ok   stop speaking
+   ok   toast
+   ok   shortcuts
+   ok   empty send
+   ok   focus composer
+   ok   handsfree on
+  Model: gemini-1.5-flash | Cache TTL: 7200s
+  Groq fallback: READY
+Γ£ô Gemini API connected (gemini-1.5-flash) [via JarvisAgentBrain]
+Γ£ô Groq API connected - Ultra-fast mode enabled!
+   ok   handsfree off
+   ok   mic button
+Γ£ô Professional Presentation Engine v4.0 loaded (4-Step Design Process)
+Γ£ô SpeechRecognition loaded ΓÇö voice input enabled!
+Loading local Piper engines... Please wait.
+  Γ£ô Loaded: English Male (Medium)
+  Γ£ô Loaded: English Female (LibriTTS)
+  Γ£ô Loaded: Hindi Male (Pratham ΓÇö hi_IN)
+All available voice engines loaded successfully!
+
+   ok   refresh deliverables
+   ok   refresh diagnostics
+   ok   export transcript
+   ok   clear conversation
+   ok   clear activity
+   status          : ERROR
+   rendered cards  : 0
+   activity lines  : 1
+   engine ok       : True | Engine has not been loaded yet.
+   boot video      : 110 frames
+   reactor size    : 300
+   views           : 6
+   voice available : True
+
+PROBLEMS: 0
+

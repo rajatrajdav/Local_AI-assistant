@@ -1,0 +1,52 @@
+﻿Γ£ô Groq API connected - Ultra-fast mode enabled!
+Γ£ô Cerebras Cloud (OpenAI-compat) connected ΓÇö Fallback LLM ready!
+  Γ£ô Groq model resolved: openai/gpt-oss-120b
+  Γ£ô Cerebras model resolved: qwen-3.8-27b
+Γ£ô Google Gen AI SDK connected ΓÇö Key Rotation enabled (1 key(s))
+  Model: gemini-1.5-flash | Cache TTL: 7200s
+  Groq fallback: READY
+Γ£ô Gemini API connected (gemini-1.5-flash) [via JarvisAgentBrain]
+Γ£ô Groq API connected - Ultra-fast mode enabled!
+Γ£ô Professional Presentation Engine v4.0 loaded (4-Step Design Process)
+Γ£ô SpeechRecognition loaded ΓÇö voice input enabled!
+Loading local Piper engines... Please wait.
+  Γ£ô Loaded: English Male (Medium)
+  Γ£ô Loaded: English Female (LibriTTS)
+  Γ£ô Loaded: Hindi Male (Pratham ΓÇö hi_IN)
+All available voice engines loaded successfully!
+
+ENGINE_OK          : True (23.3 s)
+ENGINE_ERR         : Engine has not been loaded yet.
+FUNCTION_MAP       : 15 tools
+VOICES             : ['en_male', 'en_female', 'hi_male']
+voice engines      : ['en_male', 'en_female', 'hi_male']
+USE_GROQ           : True | openai/gpt-oss-120b
+USE_CEREBRAS       : True | qwen-3.8-27b
+USE_GEMINI         : True | gemini-1.5-flash
+VOICE_INPUT        : True | 
+get_system_info    : True
+process_user_input : True
+
+--- GUI WITH WARM ENGINE ---
+status        : READY
+greeting      : System Online. Welcome back sir.
+cards         : 1
+activity rows : 2
+sysinfo keys  : ['battery', 'battery_plugged', 'cpu_count', 'cpu_usage', 'disk_free', 'disk_total', 'disk_usage', 'memory', 'memory_available', 'memory_total']
+  cpu              33.6%
+  mem              77.8% of 15.3 GB
+  disk             60.4% used ┬╖ 188.4 GB free
+  gpu              N/A
+  cores            8 cores
+  battery          82%
+  uptime           122:50:19
+  provider_groq    ONLINE   ┬╖   openai/gpt-oss-120b
+  provider_cerebras ONLINE   ┬╖   qwen-3.8-27b
+  provider_gemini  ONLINE   ┬╖   gemini-1.5-flash  ┬╖  1 key
+  tools            15 functions registered
+  voice_en_male    READY   ┬╖   English Male (Medium)
+  voice_input      READY   ┬╖   SpeechRecognition + sounddevice
+  engine           ONLINE   ┬╖   jarvis.py
+  engine_load      ΓÇö
+  counts           1  ┬╖  0  ┬╖  0
+
