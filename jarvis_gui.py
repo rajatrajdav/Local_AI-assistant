@@ -613,7 +613,6 @@ class JarvisHUD(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._tick_clock()
         self._poll_engine()
-        self._animate()
 
         # Boot sequence: looping Loading.mp4 loading screen covers the window
         # while the heavy engine loads. On engine-ready we tear it down and
@@ -627,12 +626,6 @@ class JarvisHUD(ctk.CTk):
         # here and is NOT covered by any full-screen opaque frame.
         self.backdrop = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
         self.backdrop.place(relx=0, rely=0, relwidth=1, relheight=1)
-
-        # ---- central core (small reactor) ----
-        self.core_holder = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
-        self.core_holder.place(relx=0.5, rely=0.42, anchor="center")
-        self.core = HUDReactor(self.core_holder, size=220)
-        self.core.pack()
 
         # brand
         self.brand = ctk.CTkLabel(self, text="J.A.R.V.I.S.",
@@ -784,6 +777,14 @@ class JarvisHUD(ctk.CTk):
             pass
         self._start_background_video()
         self.after(80, self._show_transcript_intro)
+        # Boot welcome sound: "System online. Welcome back, sir. Everything is ok."
+        threading.Thread(target=self._speak_welcome, daemon=True).start()
+
+    def _speak_welcome(self):
+        try:
+            speak_blocking("System online. Welcome back, sir. Everything is ok.", "en_male")
+        except Exception:
+            pass
 
     def _show_transcript_intro(self):
         self._add_message("notice", "System online. Say something — Jarvis is listening.")
@@ -1138,7 +1139,6 @@ class JarvisHUD(ctk.CTk):
         try:
             self.state_chip.configure(text="\u25cf %s" % state, text_color=colour)
             self.process_lbl.configure(text=note or caption, text_color=TEXT)
-            self.core.set_state(state)
         except Exception:
             pass
         try:
@@ -1182,24 +1182,6 @@ class JarvisHUD(ctk.CTk):
         self.after(1000, self._tick_clock)
 
     # ------------------------------------------------------------- animation
-    def _animate(self):
-        if self._closing:
-            return
-        now = time.time()
-        dt = min(0.12, max(0.001, now - self._last_frame))
-        self._last_frame = now
-        try:
-            self.core.tick(dt, self._current_amp())
-        except Exception:
-            pass
-        self.after(33, self._animate)
-
-    def _current_amp(self):
-        if self.status == "SPEAKING":
-            recent = [v for v in list(self._amp_hist)[-8:] if v >= 0]
-            base = max(recent) if recent else 0.14
-            return min(1.0, 0.24 + base * 0.9)
-        return 0.05 + 0.03 * (0.5 + 0.5 * math.sin(time.time() * 1.4))
     # ============================================================== ACTIONS
     def dispatch(self, text):
         text = (text or "").strip()
