@@ -128,6 +128,39 @@ PERSONA_LABEL = {"en_male": "JARVIS — EN", "hi_male": "JARVIS — HI",
 REPO_URL = "https://github.com/rajatrajdav/Local_AI-assistant"
 OUTPUT_DIR = os.path.join(BASE_DIR, "generated_files")
 
+# ---------------------------------------------------------------- video
+VIDEO_CANDIDATES = (
+    os.path.join(BASE_DIR, "jarvis", "Loading.mp4"),
+    os.path.join(BASE_DIR, "Loading.mp4"),
+)
+VIDEO_FRAME_TIME = 40  # ms per frame (~25 fps)
+
+
+def _find_video():
+    """Return the first existing Loading.mp4 candidate, else None."""
+    for path in VIDEO_CANDIDATES:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _extract_frames(video_path, target_w=720, max_frames=240):
+    """Sample + downscale video frames to PhotoImages (best effort)."""
+    frames = []
+    try:
+        import imageio.v2 as imageio  # type: ignore
+        reader = imageio.get_reader(video_path, "ffmpeg")
+        for i, frame in enumerate(reader):
+            if i >= max_frames:
+                break
+            img = Image.fromarray(frame)
+            img.thumbnail((target_w, target_w), RESAMPLE_LANCZOS)
+            frames.append(ImageTk.PhotoImage(img))
+        reader.close()
+    except Exception:
+        frames = []
+    return frames
+
 # ---------------------------------------------------------------- engine API
 _engine = None
 ENGINE_OK = False
@@ -668,6 +701,9 @@ class JarvisHUD(ctk.CTk):
         self._capture_token = 0
         self._thinking_since = 0.0
         self._handsfree_job = None
+        self._loading_job = None
+        self._bg_job = None
+        self._boot_poll_job = None
         self._wrap_labels = []
         self._activity_rows = []
         self._toast_widget = None
@@ -691,11 +727,14 @@ class JarvisHUD(ctk.CTk):
         self._poll_engine()
         self._animate()
 
-        # The HUD-only screen looks great but hides every reply/error inside
-        # a panel the user has to know to click open. Show the transcript by
-        # default so replies, tool results and any boot problems are visible
-        # immediately instead of appearing to "do nothing".
-        self.after(50, lambda: self.show_view("conversation"))
+        # Boot sequence: a looping Loading.mp4 loading screen covers the
+        # window while the heavy engine (Piper voices + LLM clients) loads on
+        # _boot_engine. When the engine signals ready, _on_engine_ready tears
+        # the loading screen down and starts the full-window looping video
+        # background behind the HUD.
+        self._build_loading_screen()
+        threading.Thread(target=self._decode_loading_video, daemon=True).start()
+        self._boot_poll_job = self.after(250, self._boot_poll)
 
     # ------------------------------------------------------------- layout
     def _build_layout(self):
@@ -845,7 +884,7 @@ class JarvisHUD(ctk.CTk):
         activity / deliverables / diagnostics / about views. Hidden by
         default so the HUD is the primary view, exactly like the reference
         art; toggled from the nav rail."""
-        self.overlay = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=14,
+        self.overlay = ctk.CTkFrame(self, fg_color="#020407", corner_radius=14,
                                     border_width=1, border_color=HAIRLINE_2)
         self.overlay.place(relx=0.5, rely=0.46, anchor="center",
                            relwidth=0.66, relheight=0.72)
@@ -882,6 +921,117 @@ class JarvisHUD(ctk.CTk):
         for v in self.views.values():
             v.grid(row=0, column=0, sticky="nsew")
         self.overlay.place_forget()   # hidden until a nav pill is clicked
+
+    # ---------------------------------------------------------------- boot video
+    def _build_loading_screen(self):
+        """Full-screen Loading.mp4 viewport shown while the engine loads."""
+        self.loading = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        self.loading.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.loading.lift()
+
+        self.loading_vid = tk.Label(self.loading, bg=BG, bd=0,
+                                    highlightthickness=0)
+        self.loading_vid.place(relx=0.5, rely=0.40, anchor="center")
+
+        self.loading_title = ctk.CTkLabel(
+            self.loading, text="J.A.R.V.I.S.", font=(DISPLAY, 26, "bold"),
+            text_color=CYAN, fg_color=BG)
+        self.loading_title.place(relx=0.5, rely=0.60, anchor="center")
+
+        self.loading_sub = ctk.CTkLabel(
+            self.loading, text="Initialising systems …",
+            font=(MONO, 11), text_color=TEXT_DIM, fg_color=BG)
+        self.loading_sub.place(relx=0.5, rely=0.655, anchor="center")
+
+        self.loading_detail = ctk.CTkLabel(
+            self.loading, text="Loading interface assets",
+            font=(MONO, 10), text_color=TEXT_MUTE, fg_color=BG)
+        self.loading_detail.place(relx=0.5, rely=0.695, anchor="center")
+
+    def _boot_poll(self):
+        if self._closing:
+            return
+        if self._engine_ready and getattr(self, "loading", None) is not None:
+            self._finish_boot()
+            return
+        if not self._closing:
+            self._boot_poll_job = self.after(250, self._boot_poll)
+
+    def _decode_loading_video(self):
+        """Decode Loading.mp4 frames on a background thread so boot stays fluid."""
+        path = _find_video()
+        frames = _extract_frames(path, target_w=720, max_frames=140) if path else []
+        self._loading_frames = frames
+        self.after(0, self._start_loading_animation)
+
+    def _start_loading_animation(self):
+        if self._closing or not getattr(self, "loading", None):
+            return
+        self._animate_loading()
+
+    def _animate_loading(self, idx=0):
+        if self._closing or not getattr(self, "loading", None):
+            return
+        frames = getattr(self, "_loading_frames", []) or []
+        try:
+            if frames:
+                self.loading_vid.configure(image=frames[idx])
+                self.loading_vid.image = frames[idx]
+        except Exception:
+            pass
+        self._loading_job = self.after(VIDEO_FRAME_TIME,
+                                       lambda: self._animate_loading(
+                                           (idx + 1) % len(frames) if frames else idx))
+
+    def _finish_boot(self):
+        """Tear down the loading screen, start the video background, show HUD."""
+        if self._closing:
+            return
+        try:
+            if self._loading_job:
+                self.after_cancel(self._loading_job)
+            self._loading_job = None
+            if getattr(self, "loading", None) is not None:
+                self.loading.destroy()
+                self.loading = None
+        except Exception:
+            pass
+        self._start_background_video()
+        # Preserve the original behaviour: transcript visible once booted.
+        self.after(80, lambda: self.show_view("conversation"))
+
+    def _start_background_video(self):
+        """Loop Loading.mp4 on the full-window backdrop canvas behind the HUD."""
+        path = _find_video()
+        self.backdrop.configure(bg=BG)
+        if not path:
+            return
+        self._bg_idx = 0
+        size = (max(self.winfo_width(), 1280), max(self.winfo_height(), 720))
+        threading.Thread(target=self._decode_background_video,
+                         args=(path, size), daemon=True).start()
+
+    def _decode_background_video(self, path, size):
+        frames = _extract_frames(path, target_w=max(size), max_frames=240)
+        self._bg_frames = frames
+        self.after(0, self._animate_background)
+
+    def _animate_background(self):
+        if self._closing or not getattr(self, "_bg_frames", None):
+            return
+        frames = self._bg_frames
+        frame = frames[self._bg_idx]
+        try:
+            self.backdrop.delete("bg_frame")
+            cx = max(self.winfo_width() // 2, 1)
+            cy = max(self.winfo_height() // 2, 1)
+            self.backdrop.create_image(cx, cy, image=frame, anchor="center",
+                                       tags="bg_frame")
+            self.backdrop.tag_lower("bg_frame")
+        except Exception:
+            pass
+        self._bg_idx = (self._bg_idx + 1) % len(frames)
+        self._bg_job = self.after(VIDEO_FRAME_TIME, self._animate_background)
 
     def _scroll_area(self, parent):
         holder = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=0)
@@ -2084,6 +2234,15 @@ class JarvisHUD(ctk.CTk):
         self._closing = True
         self.handsfree = False
         try:
+            if self._loading_job:
+                self.after_cancel(self._loading_job)
+            if self._boot_poll_job:
+                self.after_cancel(self._boot_poll_job)
+            if self._bg_job:
+                self.after_cancel(self._bg_job)
+        except Exception:
+            pass
+        try:
             self._tts_stop.set()
         except Exception:
             pass
@@ -2128,6 +2287,10 @@ class JarvisHUD(ctk.CTk):
                 % ENGINE_ERR)
             self._ensure_visible("conversation")
             self._toast("Engine failed to load \u2014 see Conversation panel")
+
+        # Boot -> main interface: tear down the loading screen and reveal the
+        # video-background HUD once the engine has reported ready.
+        self._finish_boot()
 
 
 def main():
