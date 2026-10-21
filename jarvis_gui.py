@@ -590,6 +590,7 @@ class JarvisHUD(ctk.CTk):
         self._capture_token = 0
         self._handsfree_job = None
         self._loading_job = None
+        self._loading_anim_started = False
         self._bg_job = None
         self._boot_poll_job = None
         self._wrap_labels = []
@@ -732,6 +733,11 @@ class JarvisHUD(ctk.CTk):
     def _boot_poll(self):
         if self._closing:
             return
+        if getattr(self, "loading", None) is not None:
+            frames = getattr(self, "_loading_frames", None)
+            if frames and not getattr(self, "_loading_anim_started", False):
+                self._loading_anim_started = True
+                self._start_loading_animation()
         if self._engine_ready and getattr(self, "loading", None) is not None:
             self._finish_boot()
             return
@@ -743,7 +749,6 @@ class JarvisHUD(ctk.CTk):
         path = _find_video()
         frames = _extract_frames(path, target_w=640, max_frames=140) if path else []
         self._loading_frames = frames
-        self.after(0, self._start_loading_animation)
 
     def _start_loading_animation(self):
         if self._closing or not getattr(self, "loading", None):
