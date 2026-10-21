@@ -680,7 +680,7 @@ class JarvisHUD(ctk.CTk):
         self.tr_row = 0
 
         # ---- bottom mic / handsfree bar ----
-        self.bar = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=10)
+        self.bar = tk.Frame(self, bg=PANEL)
         self.bar.place(relx=0.5, rely=0.955, anchor="center",
                        relwidth=0.94, height=44)
         self.bar.grid_columnconfigure(0, weight=1)
