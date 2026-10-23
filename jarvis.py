@@ -3,6 +3,7 @@ import asyncio
 import json
 import time
 import re
+from collections import deque
 import numpy as np
 import sounddevice as sd
 from piper import PiperVoice
@@ -40,6 +41,43 @@ def _ui_message(msg):
 
 def _ui_notification(title, msg_type="info"):
     pass
+
+# ============================================================
+# PROCESS / TERMINAL LOG — captures live engine activity
+# (image downloads, tool execution, presentation builds, etc.)
+# so the GUI can surface what is happening without changing its layout.
+# ============================================================
+PROCESS_LOG = deque(maxlen=300)
+
+
+def plog(text, level="INFO"):
+    """Append a timestamped process/terminal line to the shared log."""
+    try:
+        stamp = time.strftime("%H:%M:%S")
+        PROCESS_LOG.append("%s [%s] %s" % (stamp, level, str(text)))
+    except Exception:
+        pass
+
+
+def get_process_log():
+    """Return a snapshot of the process log lines."""
+    return list(PROCESS_LOG)
+
+
+def shorten_args(args, limit=40):
+    """Shorten tool arguments for the process log."""
+    if not isinstance(args, dict):
+        return shorten(str(args), limit)
+    parts = []
+    for k, v in list(args.items())[:6]:
+        parts.append("%s=%s" % (k, shorten(str(v), 24)))
+    return ", ".join(parts)
+
+
+def shorten(text, limit=60):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit - 1] + "\u2026"
+
 
 # ============================================================
 # FIX #1 — HINDI TEXT NORMALIZER UTILITY
@@ -462,7 +500,7 @@ class JarvisAgentBrain:
                 )
                 return completion.choices[0].message.content
             except Exception as e:
-                return f"Both Google and Groq limits hit. Error: {e}"
+                return "GPU limit reached. Please try again later, sir..."
 
         return "All free tier quotas exhausted. Please wait a short while for the reset window."
 
@@ -617,6 +655,7 @@ def create_word_document(title, content, filename=None, show_live=True):
 
 def download_image_from_pexels(query, save_path, slide_number=0):
     """Download a relevant image from Pexels based on query."""
+    plog("Downloading image from Pexels: %s (slide %s)" % (query, slide_number))
     try:
         from pexels_integration import (
             download_background_image,
@@ -627,9 +666,12 @@ def download_image_from_pexels(query, save_path, slide_number=0):
             import shutil
             shutil.copy2(downloaded_path, save_path)
             palette = get_color_palette_from_image(save_path)
+            plog("Image downloaded: %s -> %s" % (query, os.path.basename(save_path)))
             return {"path": save_path, "palette": palette, "query": query}
+        plog("Pexels returned no image for: %s" % query, level="WARN")
         return None
     except Exception as e:
+        plog("Pexels download error for %s: %s" % (query, e), level="ERROR")
         print(f"[Pexels Image Download Error]: {e}")
         return None
 
@@ -644,14 +686,19 @@ def create_presentation(title, slides_content, filename=None, show_live=True,
     if creative_mode:
         try:
             from creative_presentation import create_creative_presentation
+            plog("Presentation: creative mode with Pexels backgrounds — %s" % title)
             print("\n  🎨 Using Creative Presentation Mode with Pexels backgrounds...")
             filepath = create_creative_presentation(title, slides_content, filename, show_progress=True)
 
             # FIX #2 — Auto-open PowerPoint immediately after generation
             _auto_open_file(filepath)
+            plog("Presentation created (creative): %s" % filepath)
             return filepath
         except Exception as e:
+            plog("Creative presentation failed: %s — falling back to standard mode" % e, level="WARN")
             print(f"  ⚠ Creative mode failed: {e}, falling back to standard mode")
+
+    plog("Presentation: standard mode — %s (%d slides)" % (title, len(slides_content) + 1))
 
     if filename is None:
         filename = f"presentation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
@@ -709,6 +756,7 @@ def create_presentation(title, slides_content, filename=None, show_live=True,
 
             for i, slide_data in enumerate(slides_content, 2):
                 slide_title = slide_data.get("title", "Untitled")
+                plog("Designing slide %d: %s" % (i - 1, slide_title))
                 print(f"\n     🎨 Designing Slide {i - 1}: {slide_title}")
 
                 layout = 2
@@ -1777,7 +1825,11 @@ def calculate(expression: str) -> str:
 def get_system_info():
     """Get current system information including CPU, memory, disk, battery, and GPU."""
     try:
+        now = datetime.now()
         info = {
+            "date": now.strftime("%A, %d %B %Y"),
+            "time": now.strftime("%I:%M:%S %p"),
+            "datetime": now.strftime("%A, %d %B %Y at %I:%M:%S %p"),
             "cpu_usage": f"{psutil.cpu_percent(interval=1)}%",
             "cpu_count": f"{psutil.cpu_count()} cores",
             "memory": f"{psutil.virtual_memory().percent}%",
@@ -2155,9 +2207,13 @@ def execute_function(name, arguments):
             if isinstance(parsed_args.get("slides_content"), dict):
                 parsed_args["slides_content"] = [parsed_args["slides_content"]]
 
+        t0 = time.time()
         result = func(**parsed_args)
+        elapsed = time.time() - t0
+        plog("Tool executed: %s(%s) -> %s (%.2fs)" % (name, shorten_args(parsed_args), str(result)[:80], elapsed), level="TOOL")
         return f"Success: {result}"
     except Exception as e:
+        plog("Tool error: %s -> %s" % (name, e), level="ERROR")
         return f"Error executing {name}: {str(e)}"
 
 

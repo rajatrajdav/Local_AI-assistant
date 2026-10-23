@@ -579,6 +579,8 @@ class JarvisHUD(ctk.CTk):
         self.tool_count = 0
         self.sys_info = {}
         self.process_step = ""         # prominent process line text
+        self._process_t0 = 0.0         # start time of current process/tool
+        self._process_name = ""        # name of current process/tool
 
         self._busy = False
         self._speaking = False
@@ -595,6 +597,12 @@ class JarvisHUD(ctk.CTk):
         self._boot_poll_job = None
         self._wrap_labels = []
         self._toast_widget = None
+        self._sys_labels = {}          # system info readouts (cpu/gpu/mem/disk/date/time)
+        self._clock_lbl = None         # live clock label
+        self._sys_panel = None         # system info panel
+        self._last_log_len = 0         # processed process-log length
+        self._log_job = None           # process-log poll job
+        self._process_refresh_job = None  # elapsed-time refresh job
 
         self._tts_stop = threading.Event()
         self._amp_hist = deque([0.0] * 90, maxlen=90)
@@ -633,6 +641,12 @@ class JarvisHUD(ctk.CTk):
                                   fg_color=BG)
         self.brand.place(relx=0.5, rely=0.60, anchor="center")
 
+        # live clock (top-right area, non-intrusive)
+        self._clock_lbl = ctk.CTkLabel(
+            self, text="", font=(MONO, 10, "bold"),
+            text_color=TEXT_DIM, fg_color=BG)
+        self._clock_lbl.place(relx=0.95, rely=0.615, anchor="e")
+
         # ---- prominent process line (what Jarvis is doing right now) ----
         self.process_lbl = ctk.CTkLabel(
             self, text="Initialising …", font=(UI, 13, "bold"),
@@ -645,10 +659,31 @@ class JarvisHUD(ctk.CTk):
             text_color=CYAN, fg_color=PANEL, corner_radius=10, padx=10, pady=4)
         self.state_chip.place(relx=0.5, rely=0.715, anchor="center")
 
+        # ---- system info panel (date/time, CPU, GPU, memory, disk) ----
+        self._sys_panel = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=8)
+        self._sys_panel.place(relx=0.5, rely=0.775, anchor="center",
+                              relwidth=0.92, relheight=0.072)
+        self._sys_panel.grid_columnconfigure(0, weight=1)
+        self._sys_panel.grid_columnconfigure(1, weight=1)
+        self._sys_panel.grid_columnconfigure(2, weight=1)
+        self._sys_panel.grid_columnconfigure(3, weight=1)
+
+        def _sys_readout(col, key, label, colour):
+            lbl = ctk.CTkLabel(self._sys_panel, text="%s: --" % label,
+                               font=(MONO, 9, "bold"), text_color=colour,
+                               fg_color=PANEL)
+            lbl.grid(row=0, column=col, padx=6, pady=4)
+            self._sys_labels[key] = lbl
+
+        _sys_readout(0, "date", "DATE", CYAN)
+        _sys_readout(1, "cpu", "CPU", GREEN)
+        _sys_readout(2, "gpu", "GPU", AMBER)
+        _sys_readout(3, "mem", "MEM", TEXT)
+
         # ---- mini transcript (bottom) ----
         self.tr_frame = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=10)
-        self.tr_frame.place(relx=0.5, rely=0.855, anchor="center",
-                            relwidth=0.94, relheight=0.22)
+        self.tr_frame.place(relx=0.5, rely=0.885, anchor="center",
+                            relwidth=0.94, relheight=0.145)
         self.tr_frame.grid_rowconfigure(0, weight=1)
         self.tr_frame.grid_columnconfigure(0, weight=1)
 
@@ -1059,9 +1094,26 @@ class JarvisHUD(ctk.CTk):
             elif kind == "tool_start":
                 self._on_tool_start(msg)
             elif kind == "tool_done":
-                self.process_lbl.configure(text="Tool: %s \u2192 %s" % (
-                    msg.get("name", "tool"),
-                    shorten(msg.get("text", ""), 60)))
+                if self._process_refresh_job:
+                    try:
+                        self.after_cancel(self._process_refresh_job)
+                    except Exception:
+                        pass
+                    self._process_refresh_job = None
+                elapsed = 0.0
+                if self._process_t0 > 0:
+                    elapsed = time.time() - self._process_t0
+                name = msg.get("name", "tool")
+                text = shorten(msg.get("text", ""), 55)
+                # Surface the GPU-limit message (never "both Google and Groq").
+                if "GPU limit reached" in text or "rate limit" in text.lower():
+                    self.process_lbl.configure(
+                        text="GPU limit reached. Pls try again later sir...")
+                    self.set_state("ERROR")
+                else:
+                    self.process_lbl.configure(
+                        text="Tool: %s → %s (%.1fs)" % (name, text, elapsed))
+                self.set_state("READY")
             elif kind == "voice_switch":
                 self.current_voice = msg.get("voice", self.current_voice)
             elif kind == "speech_start":
@@ -1088,7 +1140,13 @@ class JarvisHUD(ctk.CTk):
         text = msg.get("text", "")
         self.msg_count += 1
         self._add_message("ai", text, tool=msg.get("tool"), voice=msg.get("voice"))
-        self.process_lbl.configure(text="Spoke reply (%d ms)" % msg.get("ms", 0))
+        # Surface the GPU-limit message prominently (never "both Google and Groq").
+        if "GPU limit reached" in text or "rate limit" in text.lower():
+            self.process_lbl.configure(
+                text="GPU limit reached. Pls try again later sir...")
+            self.set_state("ERROR")
+        else:
+            self.process_lbl.configure(text="Spoke reply (%d ms)" % msg.get("ms", 0))
         if not self.tts_enabled:
             self.set_state("READY")
 
@@ -1098,8 +1156,34 @@ class JarvisHUD(ctk.CTk):
         detail = ", ".join("%s=%s" % (k, shorten(v, 24))
                            for k, v in list(args.items())[:4]) \
             if isinstance(args, dict) else shorten(args, 50)
-        self.set_state("BUSY", "Executing %s" % name.replace("_", " "))
+        self._process_t0 = time.time()
+        self._process_name = name.replace("_", " ")
+        self.set_state("BUSY", "Executing %s" % self._process_name)
         self.process_lbl.configure(text="Running %s(%s)" % (name, detail))
+        self._schedule_process_refresh()
+
+    def _schedule_process_refresh(self):
+        """Refresh the process line with elapsed time while a tool runs."""
+        if self._process_refresh_job:
+            try:
+                self.after_cancel(self._process_refresh_job)
+            except Exception:
+                pass
+        if not self._closing and self._busy:
+            self._process_refresh_job = self.after(500, self._refresh_process_line)
+
+    def _refresh_process_line(self):
+        self._process_refresh_job = None
+        if self._closing or not self._busy or self._process_t0 <= 0:
+            return
+        elapsed = time.time() - self._process_t0
+        try:
+            base = self.process_lbl.cget("text")
+            base = base.split(" ... (")[0] if " ... (" in base else base
+            self.process_lbl.configure(text="%s ... (%.1fs)" % (base, elapsed))
+        except Exception:
+            pass
+        self._schedule_process_refresh()
 
     def _on_speech_end(self):
         self._speaking = False
@@ -1131,6 +1215,31 @@ class JarvisHUD(ctk.CTk):
             as_pct(info.get("disk_usage"))
         self._cpu_hist.append(cpu)
         self._mem_hist.append(mem)
+        # ---- surface live system data in the info panel ----
+        try:
+            if "date" in self._sys_labels:
+                self._sys_labels["date"].configure(
+                    text="DATE: %s" % info.get("date", "--"))
+            if "time" in self._sys_labels:
+                self._sys_labels["time"].configure(
+                    text="TIME: %s" % info.get("time", "--"))
+            if "cpu" in self._sys_labels:
+                self._sys_labels["cpu"].configure(
+                    text="CPU: %s%%" % cpu)
+            if "gpu" in self._sys_labels:
+                gpu = info.get("gpu")
+                if isinstance(gpu, list) and gpu:
+                    util = gpu[0].get("utilization", "--")
+                    name = gpu[0].get("name", "GPU")
+                    self._sys_labels["gpu"].configure(
+                        text="GPU: %s%% (%s)" % (util, shorten(name, 18)))
+                else:
+                    self._sys_labels["gpu"].configure(text="GPU: --")
+            if "mem" in self._sys_labels:
+                self._sys_labels["mem"].configure(
+                    text="MEM: %s%%" % mem)
+        except Exception:
+            pass
     def set_state(self, state, note=None):
         if state not in STATES:
             state = "READY"
@@ -1179,7 +1288,38 @@ class JarvisHUD(ctk.CTk):
     def _tick_clock(self):
         if self._closing:
             return
+        try:
+            now = _dt.datetime.now()
+            self._clock_lbl.configure(
+                text=now.strftime("%A, %d %B %Y  |  %I:%M:%S %p"))
+        except Exception:
+            pass
         self.after(1000, self._tick_clock)
+
+    # ------------------------------------------------------------- process log
+    def _poll_process_log(self):
+        """Poll the engine's PROCESS_LOG and surface new terminal/process
+        lines (image downloads, tool execution, etc.) in the transcript."""
+        if self._closing:
+            return
+        try:
+            log = engine_get("PROCESS_LOG")
+            if log is None:
+                mod = sys.modules.get("jarvis")
+                if mod is not None:
+                    fn = getattr(mod, "get_process_log", None)
+                    log = fn() if callable(fn) else None
+            if log is not None:
+                lines = list(log)
+                new_lines = lines[self._last_log_len:]
+                if new_lines:
+                    self._last_log_len = len(lines)
+                    for line in new_lines[-6:]:
+                        self._add_message("notice", line)
+        except Exception:
+            pass
+        if not self._closing:
+            self._log_job = self.after(1500, self._poll_process_log)
 
     # ------------------------------------------------------------- animation
     # ============================================================== ACTIONS
@@ -1354,6 +1494,8 @@ class JarvisHUD(ctk.CTk):
         # Auto-start hands-free listening once the engine is ready.
         if self.handsfree and VOICE_INPUT and not self._capturing:
             self._schedule_handsfree(600)
+        # Surface live terminal/process activity (image downloads, tools, etc.)
+        self._poll_process_log()
         # Boot -> main interface: tear down loading screen, start video background.
         self._finish_boot()
 
